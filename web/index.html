@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Xonotic WASM</title>
+	<style>
+		* { margin: 0; padding: 0; box-sizing: border-box; }
+		body {
+			background: #0a0a0a;
+			color: #e0e0e0;
+			font-family: 'Segoe UI', Tahoma, sans-serif;
+			overflow: hidden;
+		}
+		#container {
+			position: relative;
+			width: 100vw;
+			height: 100vh;
+			display: flex;
+			justify-content: center;
+			align-items: center;
+		}
+		canvas {
+			display: block;
+			background: #000;
+		}
+		#loadingOverlay {
+			position: absolute;
+			top: 0; left: 0; right: 0; bottom: 0;
+			background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
+			display: flex;
+			flex-direction: column;
+			justify-content: center;
+			align-items: center;
+			z-index: 100;
+			transition: opacity 0.5s;
+		}
+		#loadingOverlay.hidden {
+			opacity: 0;
+			pointer-events: none;
+		}
+		#loadingTitle {
+			font-size: 48px;
+			font-weight: bold;
+			color: #ff6600;
+			text-shadow: 0 0 20px rgba(255, 102, 0, 0.5);
+			margin-bottom: 20px;
+		}
+		#loadingStatus {
+			font-size: 16px;
+			color: #888;
+			margin-bottom: 20px;
+			min-height: 24px;
+		}
+		#loadingBar {
+			width: 400px;
+			height: 4px;
+			background: #222;
+			border-radius: 2px;
+			overflow: hidden;
+		}
+		#loadingProgress {
+			height: 100%;
+			background: linear-gradient(90deg, #ff6600, #ff9900);
+			width: 0%;
+			transition: width 0.3s;
+		}
+		#clickToPlay {
+			position: absolute;
+			top: 0; left: 0; right: 0; bottom: 0;
+			background: rgba(0, 0, 0, 0.85);
+			display: none;
+			justify-content: center;
+			align-items: center;
+			z-index: 90;
+			cursor: pointer;
+		}
+		#clickToPlay.show { display: flex; }
+		#clickToPlayText {
+			font-size: 24px;
+			color: #ff6600;
+			text-shadow: 0 0 10px rgba(255, 102, 0, 0.5);
+		}
+		#connectDialog {
+			position: absolute;
+			top: 50%; left: 50%;
+			transform: translate(-50%, -50%);
+			background: #1a1a2e;
+			border: 2px solid #ff6600;
+			border-radius: 8px;
+			padding: 30px;
+			z-index: 95;
+			display: none;
+			min-width: 400px;
+		}
+		#connectDialog.show { display: block; }
+		#connectDialog h2 {
+			color: #ff6600;
+			margin-bottom: 15px;
+		}
+		#connectDialog label {
+			display: block;
+			color: #aaa;
+			font-size: 14px;
+			margin-bottom: 5px;
+		}
+		#connectDialog input {
+			width: 100%;
+			padding: 8px 12px;
+			background: #0a0a0a;
+			border: 1px solid #333;
+			color: #e0e0e0;
+			border-radius: 4px;
+			font-size: 14px;
+			margin-bottom: 15px;
+		}
+		#connectDialog button {
+			padding: 10px 20px;
+			background: #ff6600;
+			border: none;
+			color: #fff;
+			font-size: 14px;
+			border-radius: 4px;
+			cursor: pointer;
+			margin-right: 10px;
+		}
+		#connectDialog button:hover { background: #ff9900; }
+		#connectDialog button.cancel { background: #333; }
+		#connectDialog button.cancel:hover { background: #555; }
+		#console {
+			position: absolute;
+			bottom: 0; left: 0; right: 0;
+			height: 150px;
+			background: rgba(0, 0, 0, 0.8);
+			overflow-y: auto;
+			font-family: 'Consolas', monospace;
+			font-size: 12px;
+			padding: 5px;
+			display: none;
+			z-index: 50;
+		}
+		#console.show { display: block; }
+		#console div { color: #ccc; line-height: 1.4; }
+		#console div.error { color: #ff4444; }
+		#toolbar {
+			position: absolute;
+			top: 10px; right: 10px;
+			z-index: 80;
+			display: flex;
+			gap: 5px;
+		}
+		#toolbar button {
+			padding: 5px 12px;
+			background: rgba(0,0,0,0.7);
+			border: 1px solid #444;
+			color: #aaa;
+			font-size: 12px;
+			border-radius: 4px;
+			cursor: pointer;
+		}
+		#toolbar button:hover { background: rgba(255,102,0,0.3); color: #fff; }
+	</style>
+</head>
+<body>
+	<div id="container">
+		<canvas id="canvas"></canvas>
+		
+		<div id="loadingOverlay">
+			<div id="loadingTitle">XONOTIC</div>
+			<div id="loadingStatus">Initializing...</div>
+			<div id="loadingBar">
+				<div id="loadingProgress"></div>
+			</div>
+		</div>
+		
+		<div id="clickToPlay">
+			<div id="clickToPlayText">Click to Play</div>
+		</div>
+		
+		<div id="connectDialog">
+			<h2>Connect to Server</h2>
+			<label>WebSocket Proxy URL</label>
+			<input type="text" id="wsProxyUrl" value="ws://localhost:8081" placeholder="ws://proxy:port">
+			<label>Game Server Address (host:port)</label>
+			<input type="text" id="serverAddress" value="localhost:26000" placeholder="host:port">
+			<div>
+				<button id="connectBtn">Connect</button>
+				<button class="cancel" id="cancelConnectBtn">Cancel</button>
+			</div>
+		</div>
+		
+		<div id="toolbar">
+			<button id="connectMenuBtn" title="Connect to server">Connect</button>
+			<button id="consoleBtn" title="Toggle console">Console</button>
+		</div>
+		
+		<div id="console"></div>
+	</div>
+
+	<script>
+		// Console output capture
+		var consoleDiv = document.getElementById('console');
+		var origLog = console.log;
+		var origErr = console.error;
+		
+		function addConsoleLine(text, isError) {
+			var div = document.createElement('div');
+			div.textContent = text;
+			if (isError) div.className = 'error';
+			consoleDiv.appendChild(div);
+			consoleDiv.scrollTop = consoleDiv.scrollHeight;
+			while (consoleDiv.children.length > 200) {
+				consoleDiv.removeChild(consoleDiv.firstChild);
+			}
+		}
+
+		// Engine state tracking
+		var engineStarted = false;
+
+		function showClickToPlay() {
+			if (engineStarted) return;
+			engineStarted = true;
+			var overlay = document.getElementById('loadingOverlay');
+			var clickToPlay = document.getElementById('clickToPlay');
+			overlay.classList.add('hidden');
+			clickToPlay.classList.add('show');
+			document.getElementById('loadingProgress').style.width = '100%';
+		}
+
+		// Wrapper for print that detects "menu: program loaded"
+		function enginePrint(text) {
+			origLog.call(console, text);
+			addConsoleLine(text, false);
+			if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
+				showClickToPlay();
+			}
+		}
+		function enginePrintErr(text) {
+			origErr.call(console, text);
+			addConsoleLine(text, true);
+			if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
+				showClickToPlay();
+			}
+		}
+
+		// Module configuration — must be before the script tag that loads darkplaces-wasm.js
+		var Module = {
+			canvas: document.getElementById('canvas'),
+			assetBaseUrl: '/game/',
+			
+			onDownloadProgress: function(file, total, count) {
+				var mb = (total / 1048576).toFixed(1);
+				document.getElementById('loadingStatus').textContent = 
+					'Downloading assets... ' + count + ' files (' + mb + ' MB)';
+				var pct = Math.min(count * 3, 90);
+				document.getElementById('loadingProgress').style.width = pct + '%';
+			},
+			
+			print: enginePrint,
+			printErr: enginePrintErr,
+			
+			noInitialRun: true,
+			
+			onRuntimeInitialized: function() {
+				console.log('WASM runtime initialized');
+			},
+			
+			// Called by pre.js after all assets are downloaded and callMain() finishes
+			onEngineReady: function() {
+				console.log('Engine started, waiting for menu QC...');
+				// Fallback: if "menu: program loaded" isn't detected within 30s, show click-to-play anyway
+				setTimeout(function() {
+					if (!engineStarted) {
+						console.log('Fallback: showing click-to-play after 30s timeout');
+						showClickToPlay();
+					}
+				}, 30000);
+			},
+		};
+
+		// Click to Play
+		document.getElementById('clickToPlay').addEventListener('click', function() {
+			this.classList.remove('show');
+			document.getElementById('loadingOverlay').classList.add('hidden');
+			
+			// Resume audio context
+			try {
+				if (typeof AudioContext !== 'undefined' || typeof webkitAudioContext !== 'undefined') {
+					var ctx = new (AudioContext || webkitAudioContext)();
+					if (ctx.state === 'suspended') ctx.resume();
+				}
+			} catch(e) {}
+			
+			// Pointer lock on canvas click
+			var canvas = document.getElementById('canvas');
+			canvas.addEventListener('click', function() {
+				if (canvas.requestPointerLock) {
+					canvas.requestPointerLock();
+				}
+			});
+		});
+
+		// Pointer lock change
+		document.addEventListener('pointerlockchange', function() {
+			var canvas = document.getElementById('canvas');
+			if (document.pointerLockElement === canvas) {
+				console.log('Pointer locked');
+			} else {
+				console.log('Pointer unlocked');
+			}
+		});
+
+		// Console toggle
+		document.getElementById('consoleBtn').addEventListener('click', function() {
+			document.getElementById('console').classList.toggle('show');
+		});
+
+		document.addEventListener('keydown', function(e) {
+			if (e.key === '`' || e.code === 'Backquote') {
+				e.preventDefault();
+				document.getElementById('console').classList.toggle('show');
+			}
+		});
+
+		// Connect dialog
+		document.getElementById('connectMenuBtn').addEventListener('click', function() {
+			document.getElementById('connectDialog').classList.add('show');
+		});
+
+		document.getElementById('cancelConnectBtn').addEventListener('click', function() {
+			document.getElementById('connectDialog').classList.remove('show');
+		});
+
+		document.getElementById('connectBtn').addEventListener('click', function() {
+			var wsProxyUrl = document.getElementById('wsProxyUrl').value;
+			var serverAddress = document.getElementById('serverAddress').value;
+			
+			document.getElementById('connectDialog').classList.remove('show');
+			
+			if (typeof Module.ccall === 'function' && engineStarted) {
+				console.log('Setting WebSocket proxy to: ' + wsProxyUrl);
+				console.log('Connecting to: ' + serverAddress);
+				Module.ccall('em_exec', null, ['string'], ['em_wss ' + wsProxyUrl + ' binary']);
+				Module.ccall('em_exec', null, ['string'], ['connect ' + serverAddress]);
+			}
+		});
+	</script>
+	
+	<script src="darkplaces-wasm.js"></script>
+</body>
+</html>

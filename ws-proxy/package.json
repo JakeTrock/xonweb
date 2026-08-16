@@ -1,0 +1,13 @@
+{
+  "name": "xonotic-ws-proxy",
+  "version": "1.0.0",
+  "description": "WebSocket-to-UDP proxy for Xonotic WASM multiplayer",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

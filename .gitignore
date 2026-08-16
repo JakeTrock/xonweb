@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Compiled engine (rebuild with make emscripten-release)
+*.wasm
+web/darkplaces-wasm.js
+xonotic/darkplaces/darkplaces-wasm.js
+xonotic/darkplaces/darkplaces-wasm.wasm
+xonotic/darkplaces/darkplaces-dedicated
+xonotic/darkplaces/darkplaces-sdl
+xonotic/darkplaces/darkplaces-glx
+
+# QuakeC compiler + compiled progs in the source tree
+xonotic/gmqcc/gmqcc
+xonotic/data/**/progs.dat
+xonotic/data/**/csprogs.dat
+xonotic/data/**/menu.dat
+
+# Object / archive leftovers
+*.o
+*.a
+*.d
+*.dwo
+*.so
+*.dylib
+
+# Test / Playwright artifacts
+test/screenshot*.png
+test/playwright-report/
+test/test-results/
+test/blob-report/
+
+# Logs, env, editor
+*.log
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+__pycache__/
+*.pyc
+.cache/
