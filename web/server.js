@@ -40,8 +40,24 @@ const MIME_TYPES = {
 	'.pk3dir': 'application/octet-stream',
 };
 
+// Track 404s for debugging
+const notFoundPaths = new Set();
+const notFoundCounts = {};
+
 const server = http.createServer((req, res) => {
 	let urlPath = decodeURIComponent(req.url.split('?')[0]);
+	
+	// Handle /404stats endpoint - returns JSON of 404 paths and counts
+	if (urlPath === '/404stats') {
+		res.writeHead(200, {
+			'Content-Type': 'application/json',
+			'Cross-Origin-Opener-Policy': 'same-origin',
+			'Cross-Origin-Embedder-Policy': 'require-corp',
+			'Access-Control-Allow-Origin': '*',
+		});
+		res.end(JSON.stringify({ paths: Array.from(notFoundPaths).sort(), counts: notFoundCounts }));
+		return;
+	}
 	
 	// Handle /filelist endpoint - returns JSON list of all asset files with sizes
 	if (urlPath === '/filelist') {
@@ -101,7 +117,12 @@ const server = http.createServer((req, res) => {
 	// Check if file exists
 	fs.stat(resolvedPath, (err, stats) => {
 		if (err || !stats.isFile()) {
-			console.log('404: ' + urlPath);
+			if (!notFoundCounts[urlPath]) {
+				notFoundCounts[urlPath] = 0;
+				notFoundPaths.add(urlPath);
+			}
+			notFoundCounts[urlPath]++;
+			console.error('404: ' + urlPath + ' (count: ' + notFoundCounts[urlPath] + ')');
 			res.writeHead(404);
 			res.end('Not Found: ' + urlPath);
 			return;

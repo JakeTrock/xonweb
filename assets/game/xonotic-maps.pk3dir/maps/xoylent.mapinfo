@@ -1,0 +1,17 @@
+title Xoylent
+description A remake of Soylent
+author sev, Strahlemann
+cdtrack 7
+size -1680 -2576 -5648 2448 1552 2064 // The map bounds are set here to fix a wrongly scaled minimap
+has weapons
+gametype dm
+gametype tdm
+gametype lms
+gametype ca
+gametype ft
+gametype ka
+gametype tka
+gametype duel
+gametype mayhem
+gametype tmayhem
+gametype surv

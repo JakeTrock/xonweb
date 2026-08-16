@@ -24,6 +24,112 @@
 			display: block;
 			background: #000;
 		}
+
+		/* --- Settings Panel --- */
+		#settingsPanel {
+			position: absolute;
+			top: 0; left: 0; right: 0; bottom: 0;
+			background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			z-index: 110;
+		}
+		#settingsPanel.hidden { display: none; }
+		#settingsForm {
+			background: rgba(20, 20, 40, 0.9);
+			border: 1px solid #333;
+			border-radius: 12px;
+			padding: 30px 40px;
+			width: 520px;
+			max-height: 90vh;
+			overflow-y: auto;
+		}
+		#settingsForm h1 {
+			color: #ff6600;
+			font-size: 28px;
+			margin-bottom: 20px;
+			text-align: center;
+		}
+		.settings-section {
+			margin-bottom: 20px;
+		}
+		.settings-section h3 {
+			color: #ff9900;
+			font-size: 14px;
+			text-transform: uppercase;
+			letter-spacing: 1px;
+			margin-bottom: 10px;
+			border-bottom: 1px solid #333;
+			padding-bottom: 5px;
+		}
+		.settings-row {
+			display: flex;
+			align-items: center;
+			margin-bottom: 8px;
+		}
+		.settings-row label {
+			width: 130px;
+			color: #aaa;
+			font-size: 13px;
+		}
+		.settings-row input[type="text"],
+		.settings-row input[type="number"],
+		.settings-row select {
+			flex: 1;
+			padding: 6px 10px;
+			background: #0a0a0a;
+			border: 1px solid #333;
+			color: #e0e0e0;
+			border-radius: 4px;
+			font-size: 13px;
+		}
+		.settings-row input[type="range"] {
+			flex: 1;
+		}
+		.settings-row .value {
+			width: 45px;
+			text-align: right;
+			color: #ff9900;
+			font-size: 12px;
+			margin-left: 8px;
+		}
+		.color-picker-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			margin-bottom: 8px;
+		}
+		.color-picker-row label {
+			width: 130px;
+			color: #aaa;
+			font-size: 13px;
+		}
+		.color-swatch {
+			width: 24px;
+			height: 24px;
+			border-radius: 4px;
+			border: 1px solid #444;
+		}
+		#playBtn {
+			display: block;
+			width: 100%;
+			padding: 12px;
+			margin-top: 15px;
+			background: linear-gradient(90deg, #ff6600, #ff9900);
+			border: none;
+			color: #fff;
+			font-size: 16px;
+			font-weight: bold;
+			border-radius: 6px;
+			cursor: pointer;
+			text-transform: uppercase;
+			letter-spacing: 2px;
+		}
+		#playBtn:hover { opacity: 0.9; }
+		#playBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+		/* --- Loading Overlay --- */
 		#loadingOverlay {
 			position: absolute;
 			top: 0; left: 0; right: 0; bottom: 0;
@@ -35,10 +141,7 @@
 			z-index: 100;
 			transition: opacity 0.5s;
 		}
-		#loadingOverlay.hidden {
-			opacity: 0;
-			pointer-events: none;
-		}
+		#loadingOverlay.hidden { opacity: 0; pointer-events: none; }
 		#loadingTitle {
 			font-size: 48px;
 			font-weight: bold;
@@ -65,22 +168,8 @@
 			width: 0%;
 			transition: width 0.3s;
 		}
-		#clickToPlay {
-			position: absolute;
-			top: 0; left: 0; right: 0; bottom: 0;
-			background: rgba(0, 0, 0, 0.85);
-			display: none;
-			justify-content: center;
-			align-items: center;
-			z-index: 90;
-			cursor: pointer;
-		}
-		#clickToPlay.show { display: flex; }
-		#clickToPlayText {
-			font-size: 24px;
-			color: #ff6600;
-			text-shadow: 0 0 10px rgba(255, 102, 0, 0.5);
-		}
+
+		/* --- Connect Dialog --- */
 		#connectDialog {
 			position: absolute;
 			top: 50%; left: 50%;
@@ -88,10 +177,10 @@
 			background: #1a1a2e;
 			border: 2px solid #ff6600;
 			border-radius: 8px;
-			padding: 30px;
-			z-index: 95;
+			padding: 25px;
+			z-index: 210;
 			display: none;
-			min-width: 400px;
+			min-width: 420px;
 		}
 		#connectDialog.show { display: block; }
 		#connectDialog h2 {
@@ -101,20 +190,26 @@
 		#connectDialog label {
 			display: block;
 			color: #aaa;
-			font-size: 14px;
+			font-size: 13px;
 			margin-bottom: 5px;
 		}
-		#connectDialog input {
+		#connectDialog input, #connectDialog select {
 			width: 100%;
 			padding: 8px 12px;
 			background: #0a0a0a;
 			border: 1px solid #333;
 			color: #e0e0e0;
 			border-radius: 4px;
-			font-size: 14px;
-			margin-bottom: 15px;
+			font-size: 13px;
+			margin-bottom: 12px;
+		}
+		#connectDialog .btn-row {
+			display: flex;
+			gap: 10px;
+			margin-top: 5px;
 		}
 		#connectDialog button {
+			flex: 1;
 			padding: 10px 20px;
 			background: #ff6600;
 			border: none;
@@ -122,11 +217,12 @@
 			font-size: 14px;
 			border-radius: 4px;
 			cursor: pointer;
-			margin-right: 10px;
 		}
 		#connectDialog button:hover { background: #ff9900; }
 		#connectDialog button.cancel { background: #333; }
 		#connectDialog button.cancel:hover { background: #555; }
+
+		/* --- Console --- */
 		#console {
 			position: absolute;
 			bottom: 0; left: 0; right: 0;
@@ -142,12 +238,15 @@
 		#console.show { display: block; }
 		#console div { color: #ccc; line-height: 1.4; }
 		#console div.error { color: #ff4444; }
+
+		/* --- Toolbar --- */
 		#toolbar {
 			position: absolute;
 			top: 10px; right: 10px;
-			z-index: 80;
+			z-index: 200;
 			display: flex;
 			gap: 5px;
+			pointer-events: auto;
 		}
 		#toolbar button {
 			padding: 5px 12px;
@@ -157,195 +256,388 @@
 			font-size: 12px;
 			border-radius: 4px;
 			cursor: pointer;
+			pointer-events: auto;
 		}
 		#toolbar button:hover { background: rgba(255,102,0,0.3); color: #fff; }
+
+		/* Xonotic color palette (0-15) */
+		.xon-colors {
+			display: flex;
+			gap: 3px;
+			flex-wrap: wrap;
+		}
+		.xon-color-btn {
+			width: 22px;
+			height: 22px;
+			border-radius: 3px;
+			border: 2px solid transparent;
+			cursor: pointer;
+		}
+		.xon-color-btn.selected { border-color: #fff; }
 	</style>
 </head>
 <body>
 	<div id="container">
 		<canvas id="canvas"></canvas>
-		
-		<div id="loadingOverlay">
+
+		<!-- Settings Panel (pre-engine) -->
+		<div id="settingsPanel">
+			<div id="settingsForm">
+				<h1>XONOTIC</h1>
+
+				<div class="settings-section">
+					<h3>Player</h3>
+					<div class="settings-row">
+						<label>Name</label>
+						<input type="text" id="playerName" value="Player" maxlength="20">
+					</div>
+					<div class="settings-row">
+						<label>Model</label>
+						<select id="playerModel">
+							<option value="models/player/erebus.iqm">Erebus</option>
+							<option value="models/player/ignis.iqm">Ignis</option>
+							<option value="models/player/nyx.iqm">Nyx</option>
+							<option value="models/player/pyria.iqm">Pyria</option>
+							<option value="models/player/seraphina.iqm">Seraphina</option>
+							<option value="models/player/umbra.iqm">Umbra</option>
+							<option value="models/player/gak.iqm">Gak</option>
+							<option value="models/player/gakmasked.iqm">Gak (Masked)</option>
+							<option value="models/player/ignismasked.iqm">Ignis (Masked)</option>
+							<option value="models/player/seraphinamasked.iqm">Seraphina (Masked)</option>
+						</select>
+					</div>
+					<div class="settings-row">
+						<label>Skin</label>
+						<select id="playerSkin">
+							<option value="0">Skin 0 (Fullbright)</option>
+							<option value="1">Skin 1 (Normal)</option>
+						</select>
+					</div>
+					<div class="color-picker-row">
+						<label>Shirt Color</label>
+						<div class="xon-colors" id="shirtColors"></div>
+					</div>
+					<div class="color-picker-row">
+						<label>Pants Color</label>
+						<div class="xon-colors" id="pantsColors"></div>
+					</div>
+				</div>
+
+				<div class="settings-section">
+					<h3>Audio</h3>
+					<div class="settings-row">
+						<label>Master Volume</label>
+						<input type="range" id="volume" min="0" max="1" step="0.05" value="0.7">
+						<span class="value" id="volumeVal">70%</span>
+					</div>
+					<div class="settings-row">
+						<label>Music Volume</label>
+						<input type="range" id="musicVolume" min="0" max="1" step="0.05" value="0.3">
+						<span class="value" id="musicVolumeVal">30%</span>
+					</div>
+				</div>
+
+				<div class="settings-section">
+					<h3>Network</h3>
+					<div class="settings-row">
+						<label>WS Proxy URL</label>
+						<input type="text" id="wsProxyUrl" value="ws://localhost:8081">
+					</div>
+					<div class="settings-row">
+						<label>Server Favorites</label>
+						<input type="text" id="serverFavorites" value="127.0.0.1:26000">
+					</div>
+				</div>
+
+				<div class="settings-section">
+					<h3>Video</h3>
+					<div class="settings-row">
+						<label>FOV</label>
+						<input type="range" id="fov" min="80" max="130" step="1" value="100">
+						<span class="value" id="fovVal">100</span>
+					</div>
+					<div class="settings-row">
+						<label>Resolution Scale</label>
+						<input type="range" id="resScale" min="0.5" max="1.0" step="0.05" value="1.0">
+						<span class="value" id="resScaleVal">100%</span>
+					</div>
+					<div class="settings-row">
+						<label>Quality</label>
+						<select id="quality">
+							<option value="fast">Fast</option>
+							<option value="normal" selected>Normal</option>
+							<option value="high">High</option>
+						</select>
+					</div>
+				</div>
+
+				<button id="playBtn">Play</button>
+			</div>
+		</div>
+
+		<!-- Loading Overlay -->
+		<div id="loadingOverlay" class="hidden">
 			<div id="loadingTitle">XONOTIC</div>
 			<div id="loadingStatus">Initializing...</div>
 			<div id="loadingBar">
 				<div id="loadingProgress"></div>
 			</div>
 		</div>
-		
-		<div id="clickToPlay">
-			<div id="clickToPlayText">Click to Play</div>
-		</div>
-		
+
+		<!-- Connect Dialog -->
 		<div id="connectDialog">
 			<h2>Connect to Server</h2>
-			<label>WebSocket Proxy URL</label>
-			<input type="text" id="wsProxyUrl" value="ws://localhost:8081" placeholder="ws://proxy:port">
-			<label>Game Server Address (host:port)</label>
+			<label>Server Address (host:port)</label>
 			<input type="text" id="serverAddress" value="localhost:26000" placeholder="host:port">
-			<div>
+			<label>Connection Mode</label>
+			<select id="connectMode">
+				<option value="udp">WebSocket (UDP)</option>
+				<option value="tcp">TCP Bridge</option>
+			</select>
+			<label>WS Proxy URL</label>
+			<input type="text" id="wsProxyUrl" value="ws://localhost:8081" placeholder="ws://proxy:port">
+			<div class="btn-row">
 				<button id="connectBtn">Connect</button>
 				<button class="cancel" id="cancelConnectBtn">Cancel</button>
 			</div>
 		</div>
-		
-		<div id="toolbar">
+
+		<!-- Toolbar -->
+		<div id="toolbar" style="display:none;">
 			<button id="connectMenuBtn" title="Connect to server">Connect</button>
+			<button id="settingsBtn" title="Settings">Settings</button>
 			<button id="consoleBtn" title="Toggle console">Console</button>
 		</div>
-		
+
+		<!-- Console -->
 		<div id="console"></div>
 	</div>
 
 	<script>
-		// Console output capture
+		// --- Xonotic color palette (0-15) ---
+		var XON_COLORS = [
+			[0, 0, 0],       [255, 80, 80],   [80, 255, 80],   [80, 80, 255],
+			[255, 255, 80],  [255, 80, 255],  [80, 255, 255],  [255, 255, 255],
+			[128, 128, 128], [192, 80, 80],   [80, 192, 80],   [80, 80, 192],
+			[192, 192, 80],  [192, 80, 192],  [80, 192, 192],  [192, 192, 192]
+		];
+		var selectedShirt = 0, selectedPants = 0;
+
+		function buildColorPicker(containerId, onSelect) {
+			var container = document.getElementById(containerId);
+			XON_COLORS.forEach(function(rgb, i) {
+				var btn = document.createElement('div');
+				btn.className = 'xon-color-btn';
+				btn.style.background = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+				btn.dataset.idx = i;
+				if (i === 0) btn.classList.add('selected');
+				btn.addEventListener('click', function() {
+					container.querySelectorAll('.xon-color-btn').forEach(function(b) { b.classList.remove('selected'); });
+					btn.classList.add('selected');
+					onSelect(i);
+				});
+				container.appendChild(btn);
+			});
+		}
+		buildColorPicker('shirtColors', function(i) { selectedShirt = i; });
+		buildColorPicker('pantsColors', function(i) { selectedPants = i; });
+
+		// --- Slider value displays ---
+		function bindSlider(id, valId, fmt) {
+			var slider = document.getElementById(id);
+			var val = document.getElementById(valId);
+			slider.addEventListener('input', function() { val.textContent = fmt(slider.value); });
+		}
+		bindSlider('volume', 'volumeVal', function(v) { return Math.round(v * 100) + '%'; });
+		bindSlider('musicVolume', 'musicVolumeVal', function(v) { return Math.round(v * 100) + '%'; });
+		bindSlider('fov', 'fovVal', function(v) { return v; });
+		bindSlider('resScale', 'resScaleVal', function(v) { return Math.round(v * 100) + '%'; });
+
+		// --- Console capture ---
 		var consoleDiv = document.getElementById('console');
 		var origLog = console.log;
 		var origErr = console.error;
-		
 		function addConsoleLine(text, isError) {
 			var div = document.createElement('div');
 			div.textContent = text;
 			if (isError) div.className = 'error';
 			consoleDiv.appendChild(div);
 			consoleDiv.scrollTop = consoleDiv.scrollHeight;
-			while (consoleDiv.children.length > 200) {
-				consoleDiv.removeChild(consoleDiv.firstChild);
-			}
+			while (consoleDiv.children.length > 200) consoleDiv.removeChild(consoleDiv.firstChild);
 		}
 
-		// Engine state tracking
+		// --- Engine state ---
 		var engineStarted = false;
+		var menuNavigated = false;
 
 		function showClickToPlay() {
 			if (engineStarted) return;
 			engineStarted = true;
-			var overlay = document.getElementById('loadingOverlay');
-			var clickToPlay = document.getElementById('clickToPlay');
-			overlay.classList.add('hidden');
-			clickToPlay.classList.add('show');
-			document.getElementById('loadingProgress').style.width = '100%';
-		}
-
-		// Wrapper for print that detects "menu: program loaded"
-		function enginePrint(text) {
-			origLog.call(console, text);
-			addConsoleLine(text, false);
-			if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
-				showClickToPlay();
-			}
-		}
-		function enginePrintErr(text) {
-			origErr.call(console, text);
-			addConsoleLine(text, true);
-			if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
-				showClickToPlay();
+			document.getElementById('loadingOverlay').classList.add('hidden');
+			document.getElementById('toolbar').style.display = 'flex';
+			// Set WS proxy URL before navigating, so server list queries work
+			var proxyUrl = document.getElementById("wsProxyUrl") ? document.getElementById("wsProxyUrl").value : "ws://localhost:8081";
+			try { Module.ccall("em_exec", null, ["string"], ["em_wss " + proxyUrl + " binary"]); } catch(e) { console.log("em_wss failed:", e.message); }
+			// Auto-navigate to multiplayer server list
+			if (!menuNavigated && typeof Module.ccall === 'function') {
+				menuNavigated = true;
+				try {
+					Module.ccall('em_exec', null, ['string'], ['menu_cmd servers']);
+					console.log('Auto-navigated to multiplayer server list');
+				} catch(e) {
+					console.log('Auto-navigate failed, will retry:', e.message);
+					setTimeout(function() {
+						try { Module.ccall('em_exec', null, ['string'], ['menu_cmd servers']); } catch(e2) {}
+					}, 2000);
+				}
 			}
 		}
 
-		// Module configuration — must be before the script tag that loads darkplaces-wasm.js
+		// --- Module configuration ---
 		var Module = {
 			canvas: document.getElementById('canvas'),
 			assetBaseUrl: '/game/',
+			
+			// Settings config — set before WASM script loads
+			settingsConfig: null,
+			writeSettings: function(cfgText) {
+				this.settingsConfig = cfgText;
+				console.log('Settings queued for write to autoexec.cfg');
+			},
 			
 			onDownloadProgress: function(file, total, count) {
 				var mb = (total / 1048576).toFixed(1);
 				document.getElementById('loadingStatus').textContent = 
 					'Downloading assets... ' + count + ' files (' + mb + ' MB)';
-				var pct = Math.min(count * 3, 90);
-				document.getElementById('loadingProgress').style.width = pct + '%';
+				document.getElementById('loadingProgress').style.width = Math.min(count * 3, 90) + '%';
 			},
 			
-			print: enginePrint,
-			printErr: enginePrintErr,
+			print: function(text) {
+				origLog.call(console, text);
+				addConsoleLine(text, false);
+				if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
+					showClickToPlay();
+				}
+			},
+			printErr: function(text) {
+				origErr.call(console, text);
+				addConsoleLine(text, true);
+				if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
+					showClickToPlay();
+				}
+			},
 			
 			noInitialRun: true,
 			
-			onRuntimeInitialized: function() {
-				console.log('WASM runtime initialized');
-			},
-			
-			// Called by pre.js after all assets are downloaded and callMain() finishes
 			onEngineReady: function() {
 				console.log('Engine started, waiting for menu QC...');
-				// Fallback: if "menu: program loaded" isn't detected within 30s, show click-to-play anyway
 				setTimeout(function() {
 					if (!engineStarted) {
-						console.log('Fallback: showing click-to-play after 30s timeout');
+						console.log('Fallback: showing UI after 30s timeout');
 						showClickToPlay();
 					}
 				}, 30000);
 			},
 		};
 
-		// Click to Play
-		document.getElementById('clickToPlay').addEventListener('click', function() {
-			this.classList.remove('show');
-			document.getElementById('loadingOverlay').classList.add('hidden');
+		// --- Settings → autoexec.cfg generation ---
+		function generateAutoexec() {
+			var name = document.getElementById('playerName').value || 'Player';
+			var model = document.getElementById('playerModel').value;
+			var skin = document.getElementById('playerSkin').value;
+			var vol = document.getElementById('volume').value;
+			var mvol = document.getElementById('musicVolume').value;
+			var fov = document.getElementById('fov').value;
+			var resScale = document.getElementById('resScale').value;
+			var quality = document.getElementById('quality').value;
+			var favorites = document.getElementById('serverFavorites').value || '127.0.0.1:26000';
+			var colorVal = selectedShirt * 16 + selectedPants;
+
+			var qualitySettings = {
+				fast:   'r_shadow_realtime_dlight 0\nr_shadow_realtime_world 0\nr_glsl 0\ncl_decals 0\nr_coronas 0',
+				normal: 'r_shadow_realtime_dlight 1\nr_shadow_realtime_world 0\nr_glsl 1\ncl_decals 1\nr_coronas 1',
+				high:   'r_shadow_realtime_dlight 1\nr_shadow_realtime_world 1\nr_glsl 1\ncl_decals 1\nr_coronas 1'
+			};
+
+			var cfg = '// Generated by Xonotic WASM settings panel\n' +
+				'name "' + name.replace(/"/g, '') + '"\n' +
+				'_cl_playermodel "' + model + '"\n' +
+				'_cl_playerskin "' + skin + '"\n' +
+				'_cl_color "' + colorVal + '"\n' +
+				'volume ' + vol + '\n' +
+				'bgmvolume ' + mvol + '\n' +
+				'fov ' + fov + '\n' +
+				'vid_pixelheight ' + resScale + '\n' +
+				qualitySettings[quality] + '\n' +
+				'net_slist_favorites "' + favorites + '"\n';
 			
-			// Resume audio context
-			try {
-				if (typeof AudioContext !== 'undefined' || typeof webkitAudioContext !== 'undefined') {
-					var ctx = new (AudioContext || webkitAudioContext)();
-					if (ctx.state === 'suspended') ctx.resume();
-				}
-			} catch(e) {}
+			return cfg;
+		}
+
+		// --- Play button: write settings and load engine ---
+		document.getElementById('playBtn').addEventListener('click', function() {
+			this.disabled = true;
+			this.textContent = 'Loading...';
 			
-			// Pointer lock on canvas click
-			var canvas = document.getElementById('canvas');
-			canvas.addEventListener('click', function() {
-				if (canvas.requestPointerLock) {
-					canvas.requestPointerLock();
-				}
-			});
+			var cfg = generateAutoexec();
+			Module.writeSettings(cfg);
+			
+			document.getElementById('settingsPanel').classList.add('hidden');
+			document.getElementById('loadingOverlay').classList.remove('hidden');
+			document.getElementById('loadingStatus').textContent = 'Loading engine...';
+			
+			// Load the WASM engine script now (after settings are set)
+			var script = document.createElement('script');
+			script.src = 'darkplaces-wasm.js';
+			document.body.appendChild(script);
 		});
 
-		// Pointer lock change
-		document.addEventListener('pointerlockchange', function() {
-			var canvas = document.getElementById('canvas');
-			if (document.pointerLockElement === canvas) {
-				console.log('Pointer locked');
-			} else {
-				console.log('Pointer unlocked');
+		// --- Connect dialog ---
+		document.getElementById('connectMenuBtn').addEventListener('click', function() {
+			document.getElementById('connectDialog').classList.add('show');
+		});
+		document.getElementById('cancelConnectBtn').addEventListener('click', function() {
+			document.getElementById('connectDialog').classList.remove('show');
+		});
+		document.getElementById('connectBtn').addEventListener('click', function() {
+			var addr = document.getElementById('serverAddress').value;
+			var mode = document.getElementById('connectMode').value;
+			var proxyUrl = document.getElementById('wsProxyUrl').value;
+			
+			document.getElementById('connectDialog').classList.remove('show');
+			
+			if (mode === 'tcp') {
+				proxyUrl += (proxyUrl.indexOf('?') !== -1 ? '&proto=tcp' : '?proto=tcp');
+			}
+			
+			console.log('Setting WS proxy: ' + proxyUrl);
+			console.log('Connecting to: ' + addr);
+			
+			try {
+				Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
+				setTimeout(function() {
+					Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
+				}, 500);
+			} catch(e) {
+				console.error('Connect failed:', e);
 			}
 		});
 
-		// Console toggle
+		// --- Settings button (re-open settings panel) ---
+		document.getElementById('settingsBtn').addEventListener('click', function() {
+			document.getElementById('settingsPanel').classList.remove('hidden');
+		});
+
+		// --- Console toggle ---
 		document.getElementById('consoleBtn').addEventListener('click', function() {
 			document.getElementById('console').classList.toggle('show');
 		});
-
 		document.addEventListener('keydown', function(e) {
 			if (e.key === '`' || e.code === 'Backquote') {
 				e.preventDefault();
 				document.getElementById('console').classList.toggle('show');
 			}
 		});
-
-		// Connect dialog
-		document.getElementById('connectMenuBtn').addEventListener('click', function() {
-			document.getElementById('connectDialog').classList.add('show');
-		});
-
-		document.getElementById('cancelConnectBtn').addEventListener('click', function() {
-			document.getElementById('connectDialog').classList.remove('show');
-		});
-
-		document.getElementById('connectBtn').addEventListener('click', function() {
-			var wsProxyUrl = document.getElementById('wsProxyUrl').value;
-			var serverAddress = document.getElementById('serverAddress').value;
-			
-			document.getElementById('connectDialog').classList.remove('show');
-			
-			if (typeof Module.ccall === 'function' && engineStarted) {
-				console.log('Setting WebSocket proxy to: ' + wsProxyUrl);
-				console.log('Connecting to: ' + serverAddress);
-				Module.ccall('em_exec', null, ['string'], ['em_wss ' + wsProxyUrl + ' binary']);
-				Module.ccall('em_exec', null, ['string'], ['connect ' + serverAddress]);
-			}
-		});
 	</script>
-	
-	<script src="darkplaces-wasm.js"></script>
 </body>
 </html>
