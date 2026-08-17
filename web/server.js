@@ -93,6 +93,39 @@ const server = http.createServer((req, res) => {
 		return;
 	}
 	
+	// Handle /mapdl/<filename> - proxy map pk3 downloads from community CDN
+	// This avoids CORS issues with direct browser-to-CDN fetches
+	if (urlPath.startsWith('/mapdl/')) {
+		const filename = urlPath.substring('/mapdl/'.length);
+		const cdnUrl = 'http://dl.xonotic.fps.gratis/' + filename;
+		console.log('Proxying map download: ' + filename + ' from ' + cdnUrl);
+		
+		const http = require('http');
+		const proxyReq = http.get(cdnUrl, function(proxyRes) {
+			if (proxyRes.statusCode !== 200) {
+				console.log('CDN returned ' + proxyRes.statusCode + ' for ' + filename);
+				res.writeHead(proxyRes.statusCode);
+				res.end();
+				return;
+			}
+			const contentLength = proxyRes.headers['content-length'] || 0;
+			res.writeHead(200, {
+				'Content-Type': 'application/zip',
+				'Content-Length': contentLength,
+				'Cross-Origin-Opener-Policy': 'same-origin',
+				'Cross-Origin-Embedder-Policy': 'require-corp',
+				'Access-Control-Allow-Origin': '*',
+			});
+			proxyRes.pipe(res);
+		});
+		proxyReq.on('error', function(err) {
+			console.error('Map download proxy error:', err.message);
+			res.writeHead(502);
+			res.end('Proxy error: ' + err.message);
+		});
+		return;
+	}
+	
 	// Handle /game/ prefix - serve from assets directory
 	let filePath;
 	if (urlPath.startsWith('/game/')) {

@@ -23,6 +23,8 @@
 		canvas {
 			display: block;
 			background: #000;
+			width: 100vw !important;
+			height: 100vh !important;
 		}
 
 		/* --- Settings Panel --- */
@@ -291,6 +293,25 @@
 		#serverList .players { color: #8f8; font-weight: bold; }
 		#serverList .ping { color: #aaa; }
 		#serverList .empty { color: #555; }
+			#serverList th.sortable { cursor: pointer; user-select: none; }
+			#serverList th.sortable:hover { color: #fff; }
+			#serverList th.sortable::after { content: ' \21C5'; font-size: 10px; opacity: 0.4; }
+			#serverList th.sortable.sorted-asc { color: #fff; }
+			#serverList th.sortable.sorted-asc::after { content: ' \2191'; opacity: 1; }
+			#serverList th.sortable.sorted-desc { color: #fff; }
+			#serverList th.sortable.sorted-desc::after { content: ' \2193'; opacity: 1; }
+			.serverBrowserToolbar { margin-bottom: 10px; flex-shrink: 0; }
+			#serverSearch {
+				width: 100%;
+				padding: 8px 12px;
+				background: #0a0a0a;
+				border: 1px solid #333;
+				border-radius: 4px;
+				color: #ccc;
+				font-size: 13px;
+				box-sizing: border-box;
+			}
+			#serverSearch:focus { outline: none; border-color: #ff6600; }
 		#serverBrowserStatus {
 			padding: 8px;
 			color: #888;
@@ -497,14 +518,17 @@
 					<button class="cancel" id="closeBrowserBtn">Close</button>
 				</div>
 			</h2>
+			<div class="serverBrowserToolbar">
+				<input type="text" id="serverSearch" placeholder="Search server name or map..." autocomplete="off" oninput="renderServerList()">
+			</div>
 			<div id="serverListContainer">
 				<table id="serverList">
 					<thead>
 						<tr>
-							<th>Server Name</th>
-							<th>Map</th>
-							<th>Players</th>
-							<th>Ping</th>
+							<th data-sort="hostname" class="sortable">Server Name</th>
+							<th data-sort="map" class="sortable">Map</th>
+							<th data-sort="players" class="sortable">Players</th>
+							<th data-sort="ping" class="sortable">Ping</th>
 							<th>Address</th>
 						</tr>
 					</thead>
@@ -513,6 +537,15 @@
 				</table>
 			</div>
 			<div id="serverBrowserStatus">Click Refresh to query online servers</div>
+		</div>
+
+		<!-- Map Download Overlay -->
+		<div id="mapDownloadOverlay" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:2px solid #ff6600;border-radius:8px;padding:30px 40px;z-index:300;display:none;text-align:center;">
+			<h3 id="mapDlTitle" style="color:#ff6600;margin-bottom:15px;">Downloading Map...</h3>
+			<div id="mapDlStatus" style="color:#aaa;font-size:14px;margin-bottom:10px;">Fetching map package...</div>
+			<div style="width:300px;height:8px;background:#0a0a0a;border-radius:4px;overflow:hidden;">
+				<div id="mapDlProgress" style="width:0%;height:100%;background:#ff6600;transition:width 0.3s;"></div>
+			</div>
 		</div>
 
 		<!-- Console -->
@@ -576,6 +609,30 @@
 		var engineStarted = false;
 		var menuNavigated = false;
 
+		// --- Error notifications ---
+		function showMapError(msg) {
+			var existing = document.getElementById('mapErrorToast');
+			if (existing) existing.remove();
+			var toast = document.createElement('div');
+			toast.id = 'mapErrorToast';
+			toast.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#2a0a0a;border:2px solid #ff3333;border-radius:8px;padding:16px 24px;z-index:500;max-width:80vw;color:#ffaaaa;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.5);cursor:pointer;text-align:center;';
+			toast.innerHTML = '<b style="color:#ff6666;font-size:15px;">Map Loading Error</b><br>' + msg.replace(/\^\d/g, '').substring(0, 200) + '<br><span style="color:#888;font-size:12px;">Click to dismiss</span>';
+			toast.onclick = function() { toast.remove(); };
+			document.body.appendChild(toast);
+			setTimeout(function() { if (toast.parentNode) toast.remove(); }, 15000);
+		}
+		function showDisconnectToast(msg) {
+			var existing = document.getElementById('disconnectToast');
+			if (existing) existing.remove();
+			var toast = document.createElement('div');
+			toast.id = 'disconnectToast';
+			toast.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#1a1a2e;border:2px solid #ff6600;border-radius:8px;padding:12px 20px;z-index:500;max-width:80vw;color:#ff9900;font-size:13px;box-shadow:0 4px 20px rgba(0,0,0,0.5);cursor:pointer;text-align:center;';
+			toast.innerHTML = '<b>Disconnected</b>: ' + msg.replace('Disconnect: ', '').substring(0, 150) + '<br><span style="color:#888;font-size:12px;">Click to dismiss</span>';
+			toast.onclick = function() { toast.remove(); };
+			document.body.appendChild(toast);
+			setTimeout(function() { if (toast.parentNode) toast.remove(); }, 10000);
+		}
+
 		function showClickToPlay() {
 			if (engineStarted) return;
 			engineStarted = true;
@@ -584,19 +641,6 @@
 			// Set WS proxy URL before navigating, so server list queries work
 			var proxyUrl = document.getElementById("wsProxyUrl") ? document.getElementById("wsProxyUrl").value : "ws://localhost:8081";
 			try { Module.ccall("em_exec", null, ["string"], ["em_wss " + proxyUrl + " binary"]); } catch(e) { console.log("em_wss failed:", e.message); }
-			// Auto-navigate to main menu (not in-game server list, which is empty in WASM)
-			if (!menuNavigated && typeof Module.ccall === 'function') {
-				menuNavigated = true;
-				try {
-					Module.ccall('em_exec', null, ['string'], ['menu_cmd nexposee']);
-					console.log('Auto-navigated to main menu');
-				} catch(e) {
-					console.log('Auto-navigate failed, will retry:', e.message);
-					setTimeout(function() {
-						try { Module.ccall('em_exec', null, ['string'], ['menu_cmd nexposee']); } catch(e2) {}
-					}, 2000);
-				}
-			}
 			// Auto-detect WS proxy URL based on current page host
 			(function() {
 				var host = location.hostname || 'localhost';
@@ -606,6 +650,10 @@
 				if (el1) el1.value = proxyUrl;
 				if (el2) el2.value = proxyUrl;
 			})();
+			// Close the built-in C menu (forceqmenu 1 opens it at startup but we use HTML UI)
+			setTimeout(function() {
+				try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch(e) { console.log('togglemenu 0 failed:', e.message); }
+			}, 500);
 			// Auto-open the HTML server browser after a short delay
 			setTimeout(function() {
 				showServerBrowser();
@@ -634,15 +682,27 @@
 			print: function(text) {
 				origLog.call(console, text);
 				addConsoleLine(text, false);
-				if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
+				if (!engineStarted && typeof text === 'string' && (text.indexOf('menu: program loaded') !== -1 || text.indexOf('menu: program is not loaded') !== -1)) {
 					showClickToPlay();
+				}
+				if (typeof text === 'string') {
+					if (text.indexOf('not found in filesystem') !== -1 || text.indexOf('failed to load') !== -1 || text.indexOf('no renderer') !== -1)
+						showMapError(text);
+					if (text.indexOf('Disconnect:') !== -1)
+						showDisconnectToast(text);
 				}
 			},
 			printErr: function(text) {
 				origErr.call(console, text);
 				addConsoleLine(text, true);
-				if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
+				if (!engineStarted && typeof text === 'string' && (text.indexOf('menu: program loaded') !== -1 || text.indexOf('menu: program is not loaded') !== -1)) {
 					showClickToPlay();
+				}
+				if (typeof text === 'string') {
+					if (text.indexOf('not found in filesystem') !== -1 || text.indexOf('failed to load') !== -1 || text.indexOf('no renderer') !== -1)
+						showMapError(text);
+					if (text.indexOf('Disconnect:') !== -1)
+						showDisconnectToast(text);
 				}
 			},
 			
@@ -734,9 +794,7 @@
 			
 			try {
 				Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
-				setTimeout(function() {
-					Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
-				}, 500);
+				Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
 			} catch(e) {
 				console.error('Connect failed:', e);
 			}
@@ -765,82 +823,255 @@
 			}
 		}
 
-		function refreshServerList() {
-			var httpUrl = getProxyHttpUrl();
-			serverBrowserStatus.textContent = 'Querying master servers...';
-			serverListBody.innerHTML = '';
+		var allServers = [];
+			var sortColumn = 'ping';
+			var sortDir = 'asc';
 
-			fetch(httpUrl + '/slist')
-				.then(function(r) { return r.json(); })
-				.then(function(data) {
-					if (data.error) {
-						serverBrowserStatus.textContent = 'Error: ' + data.error;
-						return;
+			function refreshServerList() {
+				var httpUrl = getProxyHttpUrl();
+				serverBrowserStatus.textContent = 'Querying master servers...';
+				serverListBody.innerHTML = '';
+
+				fetch(httpUrl + '/slist')
+					.then(function(r) { return r.json(); })
+					.then(function(data) {
+						if (data.error) {
+							serverBrowserStatus.textContent = 'Error: ' + data.error;
+							return;
+						}
+						allServers = data.servers || [];
+						renderServerList();
+
+						if (allServers.length === 0) {
+							serverBrowserStatus.textContent = 'No servers found. Make sure the WS proxy is running.';
+						}
+					})
+					.catch(function(err) {
+						serverBrowserStatus.textContent = 'Failed to fetch server list: ' + err.message;
+					});
+			}
+
+			function renderServerList() {
+				serverListBody.innerHTML = '';
+
+				var searchQuery = (document.getElementById('serverSearch').value || '').toLowerCase();
+
+				var filtered = allServers.filter(function(s) {
+					if (!searchQuery) return true;
+					return (s.hostname && s.hostname.toLowerCase().indexOf(searchQuery) !== -1) ||
+					       (s.map && s.map.toLowerCase().indexOf(searchQuery) !== -1);
+				});
+
+				filtered.sort(function(a, b) {
+					var va, vb;
+					if (sortColumn === 'ping') {
+						va = a.ping || 9999;
+						vb = b.ping || 9999;
+					} else if (sortColumn === 'players') {
+						va = a.players || 0;
+						vb = b.players || 0;
+					} else {
+						va = (a[sortColumn] || '').toLowerCase();
+						vb = (b[sortColumn] || '').toLowerCase();
 					}
-					var servers = data.servers || [];
-					serverBrowserStatus.textContent = servers.length + ' servers found' +
-						(data.count ? ' (' + data.count + ' total)' : '');
+					if (va < vb) return sortDir === 'asc' ? -1 : 1;
+					if (va > vb) return sortDir === 'asc' ? 1 : -1;
+					return 0;
+				});
 
-					servers.forEach(function(s) {
-						var tr = document.createElement('tr');
-						tr.dataset.address = s.address;
+				serverBrowserStatus.textContent = filtered.length + ' servers' +
+					(allServers.length !== filtered.length ? ' (of ' + allServers.length + ')' : '');
 
-						var nameTd = document.createElement('td');
-						nameTd.textContent = s.hostname;
+				filtered.forEach(function(s) {
+					var tr = document.createElement('tr');
+					tr.dataset.address = s.address;
+					tr.dataset.map = s.map;
 
-						var mapTd = document.createElement('td');
-						mapTd.textContent = s.map;
+					var nameTd = document.createElement('td');
+					nameTd.textContent = s.hostname;
 
-						var playersTd = document.createElement('td');
-						var playerStr = s.players + '/' + s.maxplayers;
-						playersTd.textContent = playerStr;
-						playersTd.className = s.players > 0 ? 'players' : 'empty';
+					var mapTd = document.createElement('td');
+					mapTd.textContent = s.map;
 
-						var pingTd = document.createElement('td');
-						pingTd.textContent = s.ping || '-';
-						pingTd.className = 'ping';
+					var playersTd = document.createElement('td');
+					var playerStr = s.players + '/' + s.maxplayers;
+					playersTd.textContent = playerStr;
+					playersTd.className = s.players > 0 ? 'players' : 'empty';
 
-						var addrTd = document.createElement('td');
-						addrTd.textContent = s.address;
+					var pingTd = document.createElement('td');
+					pingTd.textContent = s.ping || '-';
+					pingTd.className = 'ping';
 
-						tr.appendChild(nameTd);
-						tr.appendChild(mapTd);
-						tr.appendChild(playersTd);
-						tr.appendChild(pingTd);
-						tr.appendChild(addrTd);
+					var addrTd = document.createElement('td');
+					addrTd.textContent = s.address;
 
-						tr.addEventListener('click', function() {
-							var addr = this.dataset.address;
-							var proxyUrl = document.getElementById('wsProxyUrl').value || 'ws://localhost:8081';
-							serverBrowser.classList.remove('show');
-							console.log('Connecting to: ' + addr + ' via ' + proxyUrl);
-							try {
-								Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
-								setTimeout(function() {
-									Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
-								}, 500);
-							} catch(e) {
-								console.error('Connect failed:', e);
-							}
-						});
+					tr.appendChild(nameTd);
+					tr.appendChild(mapTd);
+					tr.appendChild(playersTd);
+					tr.appendChild(pingTd);
+					tr.appendChild(addrTd);
 
-						serverListBody.appendChild(tr);
+					tr.addEventListener('click', function() {
+						var addr = this.dataset.address;
+						var mapName = this.dataset.map;
+						var proxyUrl = document.getElementById('wsProxyUrl').value || 'ws://localhost:8081';
+						serverBrowser.classList.remove('show');
+						connectToServer(addr, mapName, proxyUrl);
 					});
 
-					if (servers.length === 0) {
-						serverBrowserStatus.textContent = 'No servers found. Make sure the WS proxy is running.';
-					}
-				})
-				.catch(function(err) {
-					serverBrowserStatus.textContent = 'Failed to fetch server list: ' + err.message;
+					serverListBody.appendChild(tr);
 				});
-		}
+
+				// Update sort indicators on headers
+				var headers = document.querySelectorAll('#serverList th.sortable');
+				headers.forEach(function(th) {
+					th.classList.remove('sorted-asc', 'sorted-desc');
+					if (th.dataset.sort === sortColumn) {
+						th.classList.add(sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+					}
+				});
+			}
 
 		document.getElementById('browseBtn').addEventListener('click', showServerBrowser);
 		document.getElementById('refreshServersBtn').addEventListener('click', refreshServerList);
 		document.getElementById('closeBrowserBtn').addEventListener('click', function() {
 			serverBrowser.classList.remove('show');
 		});
+
+		// Prevent SDL2/Emscripten keyboard capture when typing in input fields
+		// SDL2 registers keydown/keyup/keypress handlers on window (bubble phase).
+		// We stop propagation in the bubble phase on the input itself so SDL2 never fires.
+		['keydown', 'keyup', 'keypress'].forEach(function(evtType) {
+			document.getElementById('serverSearch').addEventListener(evtType, function(e) {
+				e.stopPropagation();
+			});
+		});
+		// Also guard other input fields in the UI
+		document.querySelectorAll('input[type="text"], input[type="number"], textarea').forEach(function(el) {
+			if (el.id === 'serverSearch') return; // already handled
+			['keydown', 'keyup', 'keypress'].forEach(function(evtType) {
+				el.addEventListener(evtType, function(e) { e.stopPropagation(); });
+			});
+		});
+
+		// Sortable column headers
+		document.querySelectorAll('#serverList th.sortable').forEach(function(th) {
+			th.addEventListener('click', function() {
+				var col = this.dataset.sort;
+				if (sortColumn === col) {
+					sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+				} else {
+					sortColumn = col;
+					sortDir = 'asc';
+				}
+				renderServerList();
+			});
+		});
+
+		// --- Map Download & Connect ---
+		var mapDlOverlay = document.getElementById('mapDownloadOverlay');
+		var mapDlStatus = document.getElementById('mapDlStatus');
+		var mapDlProgress = document.getElementById('mapDlProgress');
+		var mapDlTitle = document.getElementById('mapDlTitle');
+
+		function connectToServer(addr, mapName, proxyUrl) {
+			console.log('Connecting to: ' + addr + ' (map: ' + mapName + ') via ' + proxyUrl);
+
+			// Try to download the map first, then connect
+			downloadMapPk3(mapName).then(function() {
+				try {
+					Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
+					Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
+				} catch(e) {
+					console.error('Connect failed:', e);
+				}
+			}).catch(function(err) {
+				console.error('Map download failed, connecting anyway:', err);
+				mapDlOverlay.style.display = 'none';
+				try {
+					Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
+					Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
+				} catch(e) {
+					console.error('Connect failed:', e);
+				}
+			});
+		}
+
+		function downloadMapPk3(mapName) {
+			// Check if map already exists in the engine's filesystem
+			// Try common map paths (loose .bsp files)
+			var mapPaths = [
+				'/game/xonotic-maps.pk3dir/maps/' + mapName + '.bsp',
+				'/game/xonotic-data.pk3dir/maps/' + mapName + '.bsp',
+			];
+			for (var i = 0; i < mapPaths.length; i++) {
+				try {
+					if (FS.stat(mapPaths[i]).size > 0) {
+						console.log('Map ' + mapName + ' already exists at ' + mapPaths[i]);
+						return Promise.resolve();
+					}
+				} catch(e) { /* not found */ }
+			}
+
+			// Check if a pk3 for this map is already in xonotic-maps.pk3dir OR xonotic-data.pk3dir
+			var pk3Dirs = ['/game/xonotic-maps.pk3dir', '/game/xonotic-data.pk3dir'];
+			for (var d = 0; d < pk3Dirs.length; d++) {
+				try {
+					var mapFiles = FS.readdir(pk3Dirs[d]);
+					for (var i = 0; i < mapFiles.length; i++) {
+						var fname = mapFiles[i].toLowerCase();
+						if (fname.indexOf('.pk3') !== -1 && fname.indexOf(mapName.toLowerCase()) !== -1) {
+							console.log('Map pk3 already in ' + pk3Dirs[d] + ': ' + mapFiles[i]);
+							return Promise.resolve();
+						}
+					}
+				} catch(e) { /* dir doesn't exist */ }
+			}
+
+			// Show download overlay
+			mapDlTitle.textContent = 'Downloading Map: ' + mapName;
+			mapDlStatus.textContent = 'Searching for map package...';
+			mapDlProgress.style.width = '0%';
+			mapDlOverlay.style.display = 'block';
+
+			// Try multiple CDN URL patterns for the map pk3
+			// The Xonotic community CDN is at dl.xonotic.fps.gratis
+			// Map naming conventions vary: <mapname>.pk3, cts_<mapname>.pk3, etc.
+			var cdnBase = location.protocol + '//' + location.hostname + ':9080/mapdl/';
+			var candidates = [
+				mapName + '.pk3',
+				'cts_' + mapName + '.pk3',
+				mapName.toLowerCase() + '.pk3',
+				'cts_' + mapName.toLowerCase() + '.pk3',
+			];
+
+			function tryNextCandidate(idx) {
+				if (idx >= candidates.length) {
+					return Promise.reject(new Error('Map package not found on CDN'));
+				}
+				var filename = candidates[idx];
+				var url = cdnBase + filename;
+				mapDlStatus.textContent = 'Trying ' + filename + '...';
+
+				return Module.downloadPack(url, filename).then(function() {
+					mapDlStatus.textContent = 'Installing map package...';
+					mapDlProgress.style.width = '100%';
+					// Rescan filesystem so engine finds the new pack
+					try {
+							Module.ccall('em_exec', null, ['string'], ['fs_rescan']);
+							console.log('fs_rescan called after downloading ' + filename);
+						} catch(e) { console.warn('fs_rescan failed:', e); }
+					setTimeout(function() {
+						mapDlOverlay.style.display = 'none';
+					}, 500);
+				}).catch(function(err) {
+					console.log('Candidate ' + filename + ' failed: ' + err.message);
+					return tryNextCandidate(idx + 1);
+				});
+			}
+
+			return tryNextCandidate(0);
+		}
 
 		// --- Console toggle ---
 		document.getElementById('consoleBtn').addEventListener('click', function() {
