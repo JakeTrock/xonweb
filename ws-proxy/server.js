@@ -22,8 +22,197 @@
 const dgram = require('dgram');
 const net = require('net');
 const http = require('http');
+const dns = require('dns');
 const url = require('url');
 const WebSocket = require('ws');
+
+// --- Xonotic master server list (from xonotic-common.cfg) ---
+const MASTER_SERVERS = [
+	{ host: 'dpm4.xonotic.xyz', port: 27777 },
+	{ host: 'dpm6.xonotic.xyz', port: 27777 },
+	{ host: 'master3.xonotic.org', port: 27950 },
+	{ host: 'master4.xonotic.org', port: 42863 },
+	{ host: 'master1.xonotic.org', port: 42863 },
+	{ host: 'master2.xonotic.org', port: 27950 },
+];
+const GAMENAME = 'Xonotic';
+const PROTOCOL_VERSION = 3;
+
+// --- /slist: Query master servers and return JSON server list ---
+function resolveHost(hostname) {
+	return new Promise((resolve) => {
+		dns.resolve4(hostname, (err, addresses) => {
+			if (err || !addresses.length) resolve(null);
+			else resolve(addresses[0]);
+		});
+	});
+}
+
+function queryMasterServer(ip, port) {
+	return new Promise((resolve) => {
+		const sock = dgram.createSocket('udp4');
+		const servers = [];
+		let done = false;
+		let idleTimer = null;
+		
+		const finish = () => {
+			if (done) return;
+			done = true;
+			clearTimeout(timeout);
+			if (idleTimer) clearTimeout(idleTimer);
+			try { sock.close(); } catch(e) {}
+			resolve(servers);
+		};
+		
+		const timeout = setTimeout(finish, 3000);
+		
+		sock.on('message', (msg, rinfo) => {
+			// Parse getserversResponse (may come in multiple packets)
+			const prefix = Buffer.from([0xff, 0xff, 0xff, 0xff]);
+			const responseCmd = Buffer.concat([prefix, Buffer.from('getserversResponse')]);
+			if (msg.length < responseCmd.length) return;
+			if (!msg.slice(0, responseCmd.length).equals(responseCmd)) return;
+			
+			// After the response header, entries are \\ + 4 bytes IP + 2 bytes port (big-endian)
+			let offset = responseCmd.length;
+			while (offset + 6 <= msg.length) {
+				if (msg[offset] !== 0x5c) { offset++; continue; } // skip non-backslash bytes
+				offset++;
+				if (offset + 6 > msg.length) break;
+				const sip = msg.readUInt8(offset) + '.' + msg.readUInt8(offset+1) + '.' + msg.readUInt8(offset+2) + '.' + msg.readUInt8(offset+3);
+				const sport = msg.readUInt16BE(offset + 4);
+				offset += 6;
+				if (sip === '0.0.0.0' && sport === 0) continue; // EOT marker
+				if (sport === 0) continue;
+				servers.push({ ip: sip, port: sport });
+			}
+			
+			// Reset idle timer - close after 500ms of inactivity
+			if (idleTimer) clearTimeout(idleTimer);
+			idleTimer = setTimeout(finish, 500);
+		});
+		
+		sock.on('error', finish);
+		
+		// Send getservers query
+		const query = Buffer.concat([Buffer.from([0xff, 0xff, 0xff, 0xff]), Buffer.from('getservers ' + GAMENAME + ' ' + PROTOCOL_VERSION + ' empty full')]);
+		sock.send(query, 0, query.length, port, ip, (err) => {
+			if (err) finish();
+		});
+	});
+}
+
+function queryServerInfo(ip, port) {
+	return new Promise((resolve) => {
+		const sock = dgram.createSocket('udp4');
+		let done = false;
+		const startTime = Date.now();
+		
+		const timeout = setTimeout(() => {
+			if (!done) { done = true; try { sock.close(); } catch(e) {} resolve(null); }
+		}, 1500);
+		
+		sock.on('message', (msg, rinfo) => {
+			// Parse infoResponse
+			const prefix = Buffer.from([0xff, 0xff, 0xff, 0xff]);
+			const responseCmd = Buffer.concat([prefix, Buffer.from('infoResponse\n')]);
+			if (msg.length < responseCmd.length) return;
+			if (!msg.slice(0, responseCmd.length).equals(responseCmd)) return;
+			
+			// Parse infostring (backslash-separated key-value pairs, starts with \)
+			const infoStr = msg.slice(responseCmd.length).toString('latin1');
+			const info = {};
+			const parts = infoStr.split('\\');
+			// Skip leading empty element from the initial backslash
+			const start = (parts.length > 0 && parts[0] === '') ? 1 : 0;
+			for (let i = start; i + 1 < parts.length; i += 2) {
+				info[parts[i]] = parts[i + 1];
+			}
+			info._ping = Date.now() - startTime;
+			
+			if (!done) {
+				done = true;
+				clearTimeout(timeout);
+				try { sock.close(); } catch(e) {}
+				resolve(info);
+			}
+		});
+		
+		sock.on('error', () => { if (!done) { done = true; clearTimeout(timeout); try { sock.close(); } catch(e) {} resolve(null); } });
+		
+		// Send getinfo query
+		const query = Buffer.concat([Buffer.from([0xff, 0xff, 0xff, 0xff]), Buffer.from('getinfo')]);
+		sock.send(query, 0, query.length, port, ip, (err) => {
+			if (err) { if (!done) { done = true; clearTimeout(timeout); try { sock.close(); } catch(e) {} resolve(null); } }
+		});
+	});
+}
+
+async function handleServerList(req, res) {
+	try {
+		// 1. Resolve all master server hostnames
+		const masterIPs = [];
+		for (const ms of MASTER_SERVERS) {
+			const ip = await resolveHost(ms.host);
+			if (ip) masterIPs.push({ ip, port: ms.port, name: ms.host });
+		}
+		
+		if (masterIPs.length === 0) {
+			res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+			res.end(JSON.stringify({ servers: [], error: 'No master servers resolved' }));
+			return;
+		}
+		
+		// 2. Query all master servers in parallel
+		const masterResults = await Promise.all(masterIPs.map(ms => queryMasterServer(ms.ip, ms.port)));
+		
+		// 3. Deduplicate server list
+		const serverMap = new Map();
+		for (const servers of masterResults) {
+			for (const s of servers) {
+				const key = s.ip + ':' + s.port;
+				if (!serverMap.has(key)) serverMap.set(key, s);
+			}
+		}
+		
+		// 4. Query info from each server (in parallel, but limit concurrency)
+		const serverList = Array.from(serverMap.values());
+		const BATCH_SIZE = 50;
+		const results = [];
+		
+		for (let i = 0; i < serverList.length; i += BATCH_SIZE) {
+			const batch = serverList.slice(i, i + BATCH_SIZE);
+			const infos = await Promise.all(batch.map(s => queryServerInfo(s.ip, s.port)));
+			for (let j = 0; j < batch.length; j++) {
+				const info = infos[j];
+				if (info && info.hostname) {
+					results.push({
+						ip: batch[j].ip,
+						port: batch[j].port,
+						address: batch[j].ip + ':' + batch[j].port,
+						hostname: info.hostname || 'unnamed',
+						map: info.mapname || 'unknown',
+						players: parseInt(info.clients || '0', 10),
+						maxplayers: parseInt(info.sv_maxclients || '0', 10),
+						ping: info._ping || 0,
+						game: info.game || '',
+						mod: info.mod || '',
+						qcstatus: info.qcstatus || '',
+					});
+				}
+			}
+		}
+		
+		// Sort by player count (descending), then by ping (ascending)
+		results.sort((a, b) => b.players - a.players || a.ping - b.ping);
+		
+		res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+		res.end(JSON.stringify({ servers: results, count: results.length }));
+	} catch (err) {
+		res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+		res.end(JSON.stringify({ error: err.message }));
+	}
+}
 
 // Parse command line args
 const args = process.argv.slice(2);
@@ -38,8 +227,45 @@ for (const arg of args) {
 	}
 }
 
-// Create HTTP server for health checks and WebSocket upgrade
+// Create HTTP server for health checks, /slist API, and WebSocket upgrade
 const server = http.createServer((req, res) => {
+	const parsedUrl = url.parse(req.url, true);
+	
+	// CORS headers for all responses
+	res.setHeader('Access-Control-Allow-Origin', '*');
+	res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+	res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+	
+	if (req.method === 'OPTIONS') {
+		res.writeHead(204);
+		res.end();
+		return;
+	}
+	
+	if (parsedUrl.pathname === '/slist') {
+		handleServerList(req, res);
+		return;
+	}
+	
+	if (parsedUrl.pathname === '/resolve') {
+		const host = parsedUrl.query.host;
+		if (!host) {
+			res.writeHead(400, { 'Content-Type': 'text/plain' });
+			res.end('Missing host parameter');
+			return;
+		}
+		dns.resolve4(host, (err, addresses) => {
+			if (err || !addresses.length) {
+				res.writeHead(404, { 'Content-Type': 'text/plain' });
+				res.end('resolve failed');
+			} else {
+				res.writeHead(200, { 'Content-Type': 'text/plain' });
+				res.end(addresses[0]);
+			}
+		});
+		return;
+	}
+	
 	res.writeHead(200, { 'Content-Type': 'application/json' });
 	res.end(JSON.stringify({
 		status: 'ok',
@@ -241,6 +467,8 @@ server.listen(PORT, '0.0.0.0', () => {
 	console.log(`Default target: ${DEFAULT_TARGET || 'none (must be specified in URL)'}`);
 	console.log(`UDP mode:  ws://localhost:${PORT}/?target=host:port`);
 	console.log(`TCP mode:  ws://localhost:${PORT}/?target=host:port&proto=tcp`);
+	console.log(`Server list: http://localhost:${PORT}/slist`);
+	console.log(`DNS resolve: http://localhost:${PORT}/resolve?host=hostname`);
 	console.log(`Press Ctrl+C to stop`);
 });
 

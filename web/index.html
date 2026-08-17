@@ -222,6 +222,82 @@
 		#connectDialog button.cancel { background: #333; }
 		#connectDialog button.cancel:hover { background: #555; }
 
+		/* --- Server Browser --- */
+		#serverBrowser {
+			position: absolute;
+			top: 50%; left: 50%;
+			transform: translate(-50%, -50%);
+			background: #1a1a2e;
+			border: 2px solid #ff6600;
+			border-radius: 8px;
+			padding: 20px;
+			z-index: 210;
+			display: none;
+			width: 800px;
+			max-width: 90vw;
+			max-height: 80vh;
+			overflow: hidden;
+			display: none;
+			flex-direction: column;
+		}
+		#serverBrowser.show { display: flex; }
+		#serverBrowser h2 {
+			color: #ff6600;
+			margin-bottom: 12px;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+		}
+		#serverBrowser h2 .actions { display: flex; gap: 8px; }
+		#serverBrowser h2 button {
+			padding: 4px 12px;
+			background: #ff6600;
+			border: none;
+			color: #fff;
+			font-size: 12px;
+			border-radius: 4px;
+			cursor: pointer;
+		}
+		#serverBrowser h2 button:hover { background: #ff9900; }
+		#serverBrowser h2 button.cancel { background: #333; }
+		#serverBrowser h2 button.cancel:hover { background: #555; }
+		#serverListContainer {
+			flex: 1;
+			overflow-y: auto;
+			border: 1px solid #333;
+			border-radius: 4px;
+		}
+		#serverList {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 13px;
+		}
+		#serverList th {
+			background: #0a0a0a;
+			color: #ff9900;
+			padding: 8px 10px;
+			text-align: left;
+			position: sticky;
+			top: 0;
+			border-bottom: 1px solid #333;
+		}
+		#serverList td {
+			padding: 6px 10px;
+			border-bottom: 1px solid #1a1a2e;
+			color: #ccc;
+		}
+		#serverList tr { cursor: pointer; }
+		#serverList tr:hover td { background: rgba(255, 102, 0, 0.15); }
+		#serverList .players { color: #8f8; font-weight: bold; }
+		#serverList .ping { color: #aaa; }
+		#serverList .empty { color: #555; }
+		#serverBrowserStatus {
+			padding: 8px;
+			color: #888;
+			font-size: 12px;
+			text-align: center;
+		}
+
 		/* --- Console --- */
 		#console {
 			position: absolute;
@@ -245,20 +321,22 @@
 			top: 10px; right: 10px;
 			z-index: 200;
 			display: flex;
-			gap: 5px;
+			gap: 8px;
 			pointer-events: auto;
 		}
 		#toolbar button {
-			padding: 5px 12px;
-			background: rgba(0,0,0,0.7);
-			border: 1px solid #444;
-			color: #aaa;
-			font-size: 12px;
+			padding: 8px 16px;
+			background: rgba(255, 102, 0, 0.85);
+			border: 1px solid #ff9900;
+			color: #fff;
+			font-size: 13px;
+			font-weight: bold;
 			border-radius: 4px;
 			cursor: pointer;
 			pointer-events: auto;
+			text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
 		}
-		#toolbar button:hover { background: rgba(255,102,0,0.3); color: #fff; }
+		#toolbar button:hover { background: rgba(255, 153, 0, 1); color: #fff; }
 
 		/* Xonotic color palette (0-15) */
 		.xon-colors {
@@ -395,7 +473,7 @@
 				<option value="tcp">TCP Bridge</option>
 			</select>
 			<label>WS Proxy URL</label>
-			<input type="text" id="wsProxyUrl" value="ws://localhost:8081" placeholder="ws://proxy:port">
+			<input type="text" id="wsProxyUrlConnect" value="ws://localhost:8081" placeholder="ws://proxy:port">
 			<div class="btn-row">
 				<button id="connectBtn">Connect</button>
 				<button class="cancel" id="cancelConnectBtn">Cancel</button>
@@ -404,9 +482,37 @@
 
 		<!-- Toolbar -->
 		<div id="toolbar" style="display:none;">
+			<button id="browseBtn" title="Browse online servers">Browse</button>
 			<button id="connectMenuBtn" title="Connect to server">Connect</button>
 			<button id="settingsBtn" title="Settings">Settings</button>
 			<button id="consoleBtn" title="Toggle console">Console</button>
+		</div>
+
+		<!-- Server Browser -->
+		<div id="serverBrowser">
+			<h2>
+				<span>Server Browser</span>
+				<div class="actions">
+					<button id="refreshServersBtn">Refresh</button>
+					<button class="cancel" id="closeBrowserBtn">Close</button>
+				</div>
+			</h2>
+			<div id="serverListContainer">
+				<table id="serverList">
+					<thead>
+						<tr>
+							<th>Server Name</th>
+							<th>Map</th>
+							<th>Players</th>
+							<th>Ping</th>
+							<th>Address</th>
+						</tr>
+					</thead>
+					<tbody id="serverListBody">
+					</tbody>
+				</table>
+			</div>
+			<div id="serverBrowserStatus">Click Refresh to query online servers</div>
 		</div>
 
 		<!-- Console -->
@@ -478,19 +584,32 @@
 			// Set WS proxy URL before navigating, so server list queries work
 			var proxyUrl = document.getElementById("wsProxyUrl") ? document.getElementById("wsProxyUrl").value : "ws://localhost:8081";
 			try { Module.ccall("em_exec", null, ["string"], ["em_wss " + proxyUrl + " binary"]); } catch(e) { console.log("em_wss failed:", e.message); }
-			// Auto-navigate to multiplayer server list
+			// Auto-navigate to main menu (not in-game server list, which is empty in WASM)
 			if (!menuNavigated && typeof Module.ccall === 'function') {
 				menuNavigated = true;
 				try {
-					Module.ccall('em_exec', null, ['string'], ['menu_cmd servers']);
-					console.log('Auto-navigated to multiplayer server list');
+					Module.ccall('em_exec', null, ['string'], ['menu_cmd nexposee']);
+					console.log('Auto-navigated to main menu');
 				} catch(e) {
 					console.log('Auto-navigate failed, will retry:', e.message);
 					setTimeout(function() {
-						try { Module.ccall('em_exec', null, ['string'], ['menu_cmd servers']); } catch(e2) {}
+						try { Module.ccall('em_exec', null, ['string'], ['menu_cmd nexposee']); } catch(e2) {}
 					}, 2000);
 				}
 			}
+			// Auto-detect WS proxy URL based on current page host
+			(function() {
+				var host = location.hostname || 'localhost';
+				var proxyUrl = 'ws://' + host + ':8081';
+				var el1 = document.getElementById('wsProxyUrl');
+				var el2 = document.getElementById('wsProxyUrlConnect');
+				if (el1) el1.value = proxyUrl;
+				if (el2) el2.value = proxyUrl;
+			})();
+			// Auto-open the HTML server browser after a short delay
+			setTimeout(function() {
+				showServerBrowser();
+			}, 1000);
 		}
 
 		// --- Module configuration ---
@@ -602,7 +721,7 @@
 		document.getElementById('connectBtn').addEventListener('click', function() {
 			var addr = document.getElementById('serverAddress').value;
 			var mode = document.getElementById('connectMode').value;
-			var proxyUrl = document.getElementById('wsProxyUrl').value;
+			var proxyUrl = document.getElementById('wsProxyUrlConnect').value;
 			
 			document.getElementById('connectDialog').classList.remove('show');
 			
@@ -626,6 +745,101 @@
 		// --- Settings button (re-open settings panel) ---
 		document.getElementById('settingsBtn').addEventListener('click', function() {
 			document.getElementById('settingsPanel').classList.remove('hidden');
+		});
+
+		// --- Server Browser ---
+		var serverBrowser = document.getElementById('serverBrowser');
+		var serverListBody = document.getElementById('serverListBody');
+		var serverBrowserStatus = document.getElementById('serverBrowserStatus');
+
+		function getProxyHttpUrl() {
+			// Convert ws://host:port to http://host:port for /slist fetch
+			var wsUrl = document.getElementById('wsProxyUrl').value || 'ws://localhost:8081';
+			return wsUrl.replace(/^ws/, 'http');
+		}
+
+		function showServerBrowser() {
+			serverBrowser.classList.add('show');
+			if (serverListBody.children.length === 0) {
+				refreshServerList();
+			}
+		}
+
+		function refreshServerList() {
+			var httpUrl = getProxyHttpUrl();
+			serverBrowserStatus.textContent = 'Querying master servers...';
+			serverListBody.innerHTML = '';
+
+			fetch(httpUrl + '/slist')
+				.then(function(r) { return r.json(); })
+				.then(function(data) {
+					if (data.error) {
+						serverBrowserStatus.textContent = 'Error: ' + data.error;
+						return;
+					}
+					var servers = data.servers || [];
+					serverBrowserStatus.textContent = servers.length + ' servers found' +
+						(data.count ? ' (' + data.count + ' total)' : '');
+
+					servers.forEach(function(s) {
+						var tr = document.createElement('tr');
+						tr.dataset.address = s.address;
+
+						var nameTd = document.createElement('td');
+						nameTd.textContent = s.hostname;
+
+						var mapTd = document.createElement('td');
+						mapTd.textContent = s.map;
+
+						var playersTd = document.createElement('td');
+						var playerStr = s.players + '/' + s.maxplayers;
+						playersTd.textContent = playerStr;
+						playersTd.className = s.players > 0 ? 'players' : 'empty';
+
+						var pingTd = document.createElement('td');
+						pingTd.textContent = s.ping || '-';
+						pingTd.className = 'ping';
+
+						var addrTd = document.createElement('td');
+						addrTd.textContent = s.address;
+
+						tr.appendChild(nameTd);
+						tr.appendChild(mapTd);
+						tr.appendChild(playersTd);
+						tr.appendChild(pingTd);
+						tr.appendChild(addrTd);
+
+						tr.addEventListener('click', function() {
+							var addr = this.dataset.address;
+							var proxyUrl = document.getElementById('wsProxyUrl').value || 'ws://localhost:8081';
+							serverBrowser.classList.remove('show');
+							console.log('Connecting to: ' + addr + ' via ' + proxyUrl);
+							try {
+								Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
+								setTimeout(function() {
+									Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
+								}, 500);
+							} catch(e) {
+								console.error('Connect failed:', e);
+							}
+						});
+
+						serverListBody.appendChild(tr);
+					});
+
+					if (servers.length === 0) {
+						serverBrowserStatus.textContent = 'No servers found. Make sure the WS proxy is running.';
+					}
+				})
+				.catch(function(err) {
+					serverBrowserStatus.textContent = 'Failed to fetch server list: ' + err.message;
+				});
+		}
+
+		document.getElementById('browseBtn').addEventListener('click', showServerBrowser);
+		document.getElementById('refreshServersBtn').addEventListener('click', refreshServerList);
+		document.getElementById('closeBrowserBtn').addEventListener('click', function() {
+			serverBrowser.classList.remove('show');
 		});
 
 		// --- Console toggle ---
