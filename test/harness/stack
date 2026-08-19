@@ -1,0 +1,232 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const dgram = require('dgram');
+const {
+	REPO,
+	STACK_FILE,
+	CURRENT_DIR,
+	parseArgs,
+	printOut,
+	readJson,
+	writeJson,
+	newRunId,
+	runDir,
+	ensureDir,
+	httpGet,
+	spawnLogged,
+	pidAlive,
+	killPid,
+	sleep,
+} = require('./lib/common');
+
+const WEB_PORT = 9080;
+const PROXY_PORT = 8081;
+const DEDICATED_PORT = 26000;
+
+function dedicatedBinary() {
+	const p = path.join(REPO, 'xonotic', 'darkplaces', 'darkplaces-dedicated');
+	if (!fs.existsSync(p))
+		throw new Error('missing ' + p + ' — build with: cd xonotic/darkplaces && make sv-release');
+	return p;
+}
+
+function defaultMap() {
+	const mapsDir = path.join(REPO, 'assets', 'game');
+	try {
+		const found = walkHas(mapsDir, /xoylent.*\.pk3$/i);
+		if (found) return 'xoylent';
+	} catch (e) { /* ignore */ }
+	return '_init';
+}
+
+function walkHas(dir, re) {
+	const names = fs.readdirSync(dir);
+	for (const name of names) {
+		if (re.test(name)) return true;
+		const p = path.join(dir, name);
+		try {
+			if (fs.statSync(p).isDirectory() && walkHas(p, re)) return true;
+		} catch (e) { /* ignore */ }
+	}
+	return false;
+}
+
+async function healthWeb() {
+	try {
+		const r = await httpGet('http://127.0.0.1:' + WEB_PORT + '/', 2000);
+		return { ok: r.status === 200, status: r.status };
+	} catch (e) {
+		return { ok: false, error: e.message };
+	}
+}
+
+async function healthProxy() {
+	try {
+		const r = await httpGet('http://127.0.0.1:' + PROXY_PORT + '/', 2000);
+		let json = null;
+		try { json = JSON.parse(r.body); } catch (e) { /* ignore */ }
+		return { ok: !!(json && json.status === 'ok'), body: json };
+	} catch (e) {
+		return { ok: false, error: e.message };
+	}
+}
+
+function healthDedicated() {
+	return new Promise((resolve) => {
+		const sock = dgram.createSocket('udp4');
+		const q = Buffer.concat([Buffer.from([0xff, 0xff, 0xff, 0xff]), Buffer.from('getinfo')]);
+		let done = false;
+		const finish = (result) => {
+			if (done) return;
+			done = true;
+			clearTimeout(t);
+			try { sock.close(); } catch (e) { /* ignore */ }
+			resolve(result);
+		};
+		const t = setTimeout(() => finish({ ok: false, error: 'getinfo timeout' }), 2000);
+		sock.on('message', (msg) => finish({ ok: msg.length > 4, bytes: msg.length }));
+		sock.on('error', (err) => finish({ ok: false, error: err.message }));
+		sock.bind(0, '127.0.0.1', () => {
+			sock.send(q, DEDICATED_PORT, '127.0.0.1');
+		});
+	});
+}
+
+async function fullHealth() {
+	const stack = readJson(STACK_FILE, { pids: {} });
+	const [web, proxy, dedicated] = await Promise.all([healthWeb(), healthProxy(), healthDedicated()]);
+	return {
+		runId: stack.runId || null,
+		web,
+		proxy,
+		dedicated,
+		pids: {
+			web: stack.pids && stack.pids.web,
+			proxy: stack.pids && stack.pids.proxy,
+			dedicated: stack.pids && stack.pids.dedicated,
+		},
+		alive: {
+			web: pidAlive(stack.pids && stack.pids.web),
+			proxy: pidAlive(stack.pids && stack.pids.proxy),
+			dedicated: pidAlive(stack.pids && stack.pids.dedicated),
+		},
+	};
+}
+
+async function waitOk(fn, label, timeoutMs) {
+	const deadline = Date.now() + timeoutMs;
+	let last = null;
+	while (Date.now() < deadline) {
+		last = await fn();
+		if (last.ok) return last;
+		await sleep(300);
+	}
+	throw new Error(label + ' did not become healthy: ' + JSON.stringify(last));
+}
+
+async function cmdStart(flags) {
+	const existing = await fullHealth();
+	const runId = existing.runId || newRunId();
+	const dir = runDir(runId);
+	ensureDir(CURRENT_DIR);
+	const pids = Object.assign({}, (readJson(STACK_FILE, {}).pids) || {});
+
+	if (!existing.web.ok) {
+		const child = spawnLogged(
+			process.execPath,
+			[path.join(REPO, 'web', 'server.js')],
+			path.join(dir, 'stack-web.log'),
+			path.join(REPO, 'web')
+		);
+		pids.web = child.pid;
+		await waitOk(healthWeb, 'web', 8000);
+	}
+	if (!existing.proxy.ok) {
+		const child = spawnLogged(
+			process.execPath,
+			[path.join(REPO, 'ws-proxy', 'server.js')],
+			path.join(dir, 'stack-proxy.log'),
+			path.join(REPO, 'ws-proxy')
+		);
+		pids.proxy = child.pid;
+		await waitOk(healthProxy, 'proxy', 8000);
+	}
+	if (!existing.dedicated.ok) {
+		const map = flags.map || defaultMap();
+		const bin = dedicatedBinary();
+		const child = spawnLogged(
+			bin,
+			['-xonotic', '-basedir', path.join(REPO, 'xonotic'), '+sv_public', '0', '+port', String(DEDICATED_PORT), '+map', map],
+			path.join(dir, 'stack-dedicated.log'),
+			path.join(REPO, 'xonotic', 'darkplaces')
+		);
+		pids.dedicated = child.pid;
+		await waitOk(healthDedicated, 'dedicated', 15000);
+	}
+
+	const rec = {
+		runId,
+		pids,
+		startedAt: new Date().toISOString(),
+		map: flags.map || defaultMap(),
+	};
+	writeJson(STACK_FILE, rec);
+	writeJson(path.join(CURRENT_DIR, 'run.json'), { runId });
+	printOut(await fullHealth());
+}
+
+function cmdStop() {
+	const stack = readJson(STACK_FILE, { pids: {} });
+	const pids = stack.pids || {};
+	for (const name of ['web', 'proxy', 'dedicated'])
+		killPid(pids[name]);
+	if (stack.runId) printOut({ stopped: true, runId: stack.runId, pids });
+	else printOut({ stopped: true, pids });
+}
+
+async function cmdStatus() {
+	const h = await fullHealth();
+	printOut(h);
+	const ok = h.web.ok && h.proxy.ok && h.dedicated.ok;
+	process.exitCode = ok ? 0 : 1;
+}
+
+function cmdLogs(flags) {
+	const stack = readJson(STACK_FILE, null);
+	if (!stack || !stack.runId) throw new Error('no stack run (stack start first)');
+	const dir = runDir(stack.runId);
+	const svcs = flags.svc ? [flags.svc] : ['web', 'proxy', 'dedicated'];
+	for (const s of svcs) {
+		const file = path.join(dir, 'stack-' + s + '.log');
+		process.stdout.write('===== ' + s + ' (' + file + ') =====\n');
+		if (!fs.existsSync(file)) {
+			process.stdout.write('(missing)\n');
+			continue;
+		}
+		const text = fs.readFileSync(file, 'utf8');
+		const lines = text.split('\n');
+		process.stdout.write(lines.slice(-80).join('\n') + (text.endsWith('\n') ? '' : '\n'));
+	}
+}
+
+async function main() {
+	const { flags, positional } = parseArgs(process.argv.slice(2));
+	const cmd = positional[0];
+	if (!cmd || cmd === 'help' || cmd === '-h') {
+		process.stderr.write('Usage: test/harness/stack start|status|stop|logs [--svc web|proxy|dedicated] [--map xoylent]\n');
+		process.exit(cmd ? 0 : 2);
+	}
+	if (cmd === 'start') await cmdStart(flags);
+	else if (cmd === 'stop') cmdStop();
+	else if (cmd === 'status') await cmdStatus();
+	else if (cmd === 'logs') cmdLogs(flags);
+	else throw new Error('unknown command ' + cmd);
+}
+
+main().catch((err) => {
+	process.stderr.write(err.message + '\n');
+	process.exit(1);
+});

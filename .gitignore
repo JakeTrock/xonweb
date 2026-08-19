@@ -24,11 +24,10 @@ xonotic/data/**/menu.dat
 *.so
 *.dylib
 
-# Test / Playwright artifacts
+# Harness artifacts (and leftover probe screenshots)
+test/artifacts/
 test/screenshot*.png
-test/playwright-report/
-test/test-results/
-test/blob-report/
+test/browsers/
 
 # Logs, env, editor
 *.log

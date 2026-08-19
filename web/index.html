@@ -1084,5 +1084,12 @@
 			}
 		});
 	</script>
+	<script>
+		if (/(?:^|[?&])harness(?:=|&|$)/.test(location.search)) {
+			var harnessScript = document.createElement('script');
+			harnessScript.src = 'harness-bridge.js';
+			document.body.appendChild(harnessScript);
+		}
+	</script>
 </body>
 </html>
