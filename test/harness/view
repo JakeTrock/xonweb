@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+'use strict';
+
+const http = require('http');
+const { parseArgs } = require('./lib/common');
+const { connect } = require('./lib/cdp');
+
+const PLACEHOLDER = Buffer.from(
+	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+	'base64'
+);
+
+function html(id) {
+	return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>xonweb client ${id}</title>
+<style>
+  html, body { margin: 0; background: #111; color: #ddd; font-family: sans-serif; }
+  header { padding: 8px 12px; background: #1a1a2e; font-size: 13px; }
+  img { display: block; width: 100%; height: auto; background: #000; }
+</style>
+</head>
+<body>
+<header>client ${id} — live view (refreshes ~3/s) — <a href="/shot.png" style="color:#ff9900">shot.png</a></header>
+<img id="v" alt="client ${id}" src="/shot.png">
+<script>
+setInterval(function () {
+  document.getElementById('v').src = '/shot.png?' + Date.now();
+}, 350);
+</script>
+</body>
+</html>`;
+}
+
+async function main() {
+	const { flags } = parseArgs(process.argv.slice(2));
+	const id = flags.id || 'a';
+	const cdpPort = flags.cdp || 9222;
+	const port = flags.port || 9322;
+
+	let png = PLACEHOLDER;
+	let cdp = null;
+
+	async function ensureCdp() {
+		if (cdp && cdp.ws && cdp.ws.readyState === 1) return cdp;
+		try { if (cdp) cdp.close(); } catch (e) { /* ignore */ }
+		cdp = await connect(cdpPort);
+		cdp.ws.on('close', () => { cdp = null; });
+		return cdp;
+	}
+
+	async function tick() {
+		try {
+			const conn = await ensureCdp();
+			png = await conn.screenshot();
+		} catch (e) {
+			cdp = null;
+		}
+	}
+
+	setInterval(tick, 400);
+	tick();
+
+	const server = http.createServer((req, res) => {
+		const url = req.url.split('?')[0];
+		if (url === '/shot.png' || url === '/shot') {
+			res.writeHead(200, {
+				'Content-Type': 'image/png',
+				'Cache-Control': 'no-store, no-cache, must-revalidate',
+				'Access-Control-Allow-Origin': '*',
+			});
+			res.end(png);
+			return;
+		}
+		res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+		res.end(html(id));
+	});
+
+	server.listen(port, '0.0.0.0', () => {
+		process.stdout.write('view http://127.0.0.1:' + port + '/  (cdp ' + cdpPort + ', id ' + id + ')\n');
+	});
+	server.on('error', (err) => {
+		process.stderr.write(err.message + '\n');
+		process.exit(1);
+	});
+}
+
+main().catch((err) => {
+	process.stderr.write(err.message + '\n');
+	process.exit(1);
+});

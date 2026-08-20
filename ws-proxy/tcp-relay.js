@@ -39,10 +39,10 @@ for (const arg of args) {
 let connId = 0;
 
 function writeTcpFrame(socket, data) {
-	const header = Buffer.allocUnsafe(4);
-	header.writeUInt32BE(data.length, 0);
-	socket.write(header);
-	socket.write(data);
+	const frame = Buffer.allocUnsafe(4 + data.length);
+	frame.writeUInt32BE(data.length, 0);
+	data.copy(frame, 4);
+	socket.write(frame);
 }
 
 function createTcpFrameParser(onMessage) {
@@ -67,15 +67,22 @@ function createTcpFrameParser(onMessage) {
 const tcpServer = net.createServer((tcpSocket) => {
 	const num = ++connId;
 	console.log(`[Relay ${num}] TCP connection from ${tcpSocket.remoteAddress}:${tcpSocket.remotePort}`);
+	try { tcpSocket.setNoDelay(true); } catch (e) { /* ignore */ }
+	try { tcpSocket.setKeepAlive(true, 10000); } catch (e) { /* ignore */ }
+	try { tcpSocket.setTimeout(0); } catch (e) { /* ignore */ }
 
 	const udpSocket = dgram.createSocket('udp4');
 	let udpTarget = { host: targetHost, port: targetPort };
+	try { udpSocket.setRecvBufferSize(4 * 1024 * 1024); } catch (e) { /* ignore */ }
+	try { udpSocket.setSendBufferSize(4 * 1024 * 1024); } catch (e) { /* ignore */ }
 
 	// TCP → UDP
 	tcpSocket.on('data', createTcpFrameParser((payload) => {
-		udpSocket.send(payload, 0, payload.length, udpTarget.port, udpTarget.host, (err) => {
-			if (err) console.error(`[Relay ${num}] UDP send error: ${err.message}`);
-		});
+		try {
+			udpSocket.send(payload, 0, payload.length, udpTarget.port, udpTarget.host);
+		} catch (err) {
+			console.error(`[Relay ${num}] UDP send error: ${err.message}`);
+		}
 	}));
 
 	// UDP → TCP (framed)
