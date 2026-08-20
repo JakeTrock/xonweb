@@ -1030,7 +1030,7 @@
 			mapDlStatus.textContent = 'Checking map package...';
 			mapDlProgress.style.width = '0%';
 			mapDlOverlay.style.display = 'block';
-			return downloadMapPk3(mapName).catch(function(err) {
+			return downloadMapPk3(mapName, addr).catch(function(err) {
 				console.error('Map download failed, continuing with texture prefetch:', err);
 			}).then(function() {
 				if (seq !== undefined && seq !== connectSeq) return;
@@ -1076,7 +1076,7 @@
 			showMapError('Missing map ' + missing + ' — downloading and reconnecting…');
 			var proxyUrl = lastProxyUrl || (document.getElementById('wsProxyUrl') || {}).value || 'ws://127.0.0.1:8081';
 			var addr = lastConnectAddr;
-			downloadMapPk3(missing).then(function() {
+			downloadMapPk3(missing, addr).then(function() {
 				if (seq !== connectSeq) return;
 				return prefetchThen(missing);
 			}).then(function() {
@@ -1148,7 +1148,7 @@
 			});
 		}
 
-		function downloadMapPk3(mapName) {
+		function downloadMapPk3(mapName, serverAddr) {
 			// Check if map already exists in the engine's filesystem
 			// Try common map paths (loose .bsp files)
 			var mapPaths = [
@@ -1213,7 +1213,6 @@
 
 			// Official maps are hashed zips under xonotic/data/, not <map>.pk3 on the
 			// community CDN. Try those first; CDN is for extra/community packs.
-			var cdnBase = location.protocol + '//' + location.hostname + ':9080/mapdl/';
 			var candidates = [
 				mapName + '.pk3',
 				'cts_' + mapName + '.pk3',
@@ -1226,7 +1225,8 @@
 					return Promise.reject(new Error('Map package not found on CDN'));
 				}
 				var filename = candidates[idx];
-				var url = cdnBase + filename;
+				var url = '/mapdl/' + encodeURIComponent(filename);
+				if (serverAddr) url += '?server=' + encodeURIComponent(serverAddr);
 				mapDlStatus.textContent = 'Trying ' + filename + '...';
 
 				return downloadPackCached(url, filename).then(function() {

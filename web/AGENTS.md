@@ -11,6 +11,7 @@ Parent: [../AGENTS.md](../AGENTS.md). Engine preload lives in [../xonotic/darkpl
 | `index.html` | Settings panel, canvas, loading overlay, HTML console, Connect dialog, server browser, `Module` setup |
 | `map-assets.js` | On connect: parse BSP texture + entity lumps, fetch shaders, images/env, and sounds into MEMFS, persist IDBFS |
 | `server.js` | Static server on **9080**. No CLI flags, no env vars |
+| `asset-cache.js` | Disk cache for `/mapdl/` and `/curlproxy` GET bodies (`.cache/assets/`, 3-day TTL) |
 | `darkplaces-wasm.js` | **Generated** single-file Emscripten blob. Do not edit |
 | `pre.js` | **Stale.** Not passed to `--pre-js`. Do not treat as live |
 | `original-pre.js` | Even older preload stub. Archive only |
@@ -37,12 +38,15 @@ cp ../xonotic/darkplaces/darkplaces-wasm.js .
 - `/filelist` → JSON `[{path, size}, ...]` of every file under `assets/game/` (used by **compiled** `wasm/pre.js`). Does **not** include `xonotic/data/`
 - `/dirlist?prefix=` → JSON `{prefix, files, truncated}` of files under that `/game/` prefix from `assets/game` **then** `xonotic/data` (used to prefetch map shaders/textures). Assets win on duplicate paths
 - `/mapfind?name=<map>` → JSON `{files:[{path,size,filename}]}` of local hashed/named `.pk3` packs whose filename contains the map (assets gamedirs, then `xonotic/data/*.pk3`). `connectToServer` installs the first hit into MEMFS when `/mapdl/<map>.pk3` would 404
-- `/curlproxy?url=` → GET/POST proxy for engine `sv_curl` autodownload (COEP/CORS). HTTP(S) only, no private hosts, 256 MiB cap, follows redirects. WASM `libcurl.c` fetches this instead of dlopen libcurl
+- `/mapdl/<file.pk3>` → proxy community CDN `http://dl.xonotic.fps.gratis/<file>`. Optional `?server=ip:port` records which dedicated asked for it. Filename must be a single `*.pk3` component
+- `/curlproxy?url=` → GET/POST proxy for engine `sv_curl` autodownload (COEP/CORS). HTTP(S) only, no private hosts, 256 MiB cap, follows redirects. WASM `libcurl.c` fetches this instead of dlopen libcurl. GET bodies are cached; POST is not. Optional `?server=` / `X-Xon-Server`
+- `/assetcache` → JSON of the on-disk proxy cache (hosts, per-server index, bytes, TTL)
 - `/404stats` → JSON of 404 paths/counts (use this when a texture/sound is missing)
 - `/view/a/` and `/view/b/` → live screenshots of the harness Chromes (proxies `127.0.0.1:9322` / `:9323`). Use these on the LAN; raw `:9322`/`:9323` are often unreachable even when `:9080` works
 - Path traversal blocked (resolved path must stay under `web/` or `assets/`)
 - Headers on every response: `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`, `Cross-Origin-Resource-Policy: same-origin`. CORS echoes the request `Origin` (never `*`) so credentialed `fetch('/filelist')` works on a LAN IP, not only on localhost
 - `Cache-Control: no-store` for `.js` and `.html` (so a new WASM blob is picked up). Map packs/textures/sounds/models under `/game/` and `/mapdl/` get `public, max-age=604800`. `.dat` / `.cfg` are not cached (gamecode changes)
+- **Server-side proxy cache:** GET `/mapdl/` and `/curlproxy` store the body under `.cache/assets/hosts/<origin-host>/` (keyed by the HTTP origin + URL). Optional game-server association lives in `.cache/assets/servers/<ip_port>.json`. TTL is **3 days from last access** (sliding); expired files are swept on listen and hourly. Concurrent downloads of the same URL wait on the first fetch. Response header `X-Asset-Cache: HIT|MISS|BYPASS`. This is **not** the first-run `/filelist` tree and is **not** listed there — do not copy cached pk3s into `assets/game/` just to share them. `.cache/` is gitignored.
 - `Range` → 206. Keep COOP/COEP on range responses if you touch this
 
 MIME: `.pk3` is `application/zip`. Unknown extensions are `application/octet-stream` (fine for `fetch` → MEMFS).
@@ -113,7 +117,7 @@ net_slist_favorites
 
 - UI, connect flow, server browser → `index.html`
 - Map texture prefetch → `map-assets.js`
-- Headers, `/filelist`, `/dirlist`, MIME, caching, `/game/` fallback to `xonotic/data/` → `server.js`
+- Headers, `/filelist`, `/dirlist`, MIME, caching, `/game/` fallback to `xonotic/data/`, `/mapdl/` `/curlproxy` disk cache → `server.js` + `asset-cache.js`
 - What gets downloaded into MEMFS → `xonotic/darkplaces/wasm/pre.js` then rebuild + copy JS here
 - Do not point `--pre-js` at `web/pre.js` without reconciling it with `/filelist` + IDBFS + maps gamedir
 - Do not drop COOP/COEP. Do not set `Access-Control-Allow-Origin: *` (Chrome rejects credentialed fetches against a wildcard; LAN `http://10.103…` hits this, `localhost` often does not)
@@ -128,6 +132,7 @@ net_slist_favorites
 - `web/map-assets.js` always runs on connect: parse the BSP texture lump **and entity lump**, fetch matching `scripts/*.shader` plus the image/env files those shaders reference **and `noise`/`sound` `.wav`/`.ogg` paths**. Hits, in order: MEMFS, Cache Storage (`xon-postboot-v1`), then network (which also fills HTTP cache + Cache Storage + IDBFS). A map pk3 already in MEMFS still needs this — official maps reference trak/phillipk/sky packs and `xonotic-maps.pk3dir/sound/*` that are not in the first-run `/filelist`.
 - Joining another server mid-match must go through `connectToServer` (not a raw `em_exec connect`). That issues `disconnect` before the overlay, so the old dedicated is left instead of waiting for a timeout while the next map downloads.
 - `/game/` serves `assets/game/` first, then falls back to `xonotic/data/` so those packs do not have to be copied into assets (and therefore not into the 2.8 GB boot download).
+- A second browser joining the same public server still requests `/mapdl/` / `/curlproxy`; the **Node** cache is what skips the CDN. Clearing IndexedDB does not clear `.cache/assets/`. Entries unused for 3 days are deleted; bumping nothing is required.
 - Failed fetches in pre.js are marked downloaded and never retried until `assetVersion` changes or IDBFS is cleared. Map-asset 404s are not marked that way; the placeholder is the last resort.
 - Linux paths are case-sensitive. Use `/404stats`.
 - `localhost` in `connect` is rewritten in the engine to `127.0.0.1` (browser `gethostbyname` is useless). Other hostnames will fail; use dotted IPv4 from `/slist`.

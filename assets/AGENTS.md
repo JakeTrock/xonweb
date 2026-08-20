@@ -90,7 +90,7 @@ cp -f assets/game/xonotic-maps.pk3dir/mint.pk3 xonotic/data/mint.pk3
 test/harness/stack start --map mint
 ```
 
-WASM curl uses `GET /curlproxy?url=` (same-origin, COEP-safe) instead of dlopen libcurl. The dedicated can still `stuffcmd` `curl --pak --forthismap --as …`. Options if you want the pack before connect:
+WASM curl uses `GET /curlproxy?url=` (same-origin, COEP-safe) instead of dlopen libcurl. Successful GET bodies (and `/mapdl/` CDN packs) are stored on the web host under `.cache/assets/` for 3 days, keyed by origin host and optionally the dedicated `?server=` address — see [../web/AGENTS.md](../web/AGENTS.md). The dedicated can still `stuffcmd` `curl --pak --forthismap --as …`. Options if you want the pack before connect:
 
 1. Pre-seed the pk3 here so `/filelist` includes it (`connectToServer` then skips `/mapdl/` when a `.pk3` **filename** contains the map name)
 2. Call `Module.downloadPack(url, filename)` then `em_exec fs_rescan` (HTML `connectToServer` does this via `/mapdl/` when the pack is not already in MEMFS)

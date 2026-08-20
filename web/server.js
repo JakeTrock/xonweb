@@ -7,6 +7,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const assetCacheMod = require('./asset-cache');
 
 const PORT = 9080;
 const REPO_ROOT = path.join(__dirname, '..');
@@ -17,6 +18,7 @@ const ASSETS_GAME = path.join(ASSETS_DIR, 'game');
 // so the WASM client can fetch map textures on connect without copying 2.7GB
 // into assets/ (which would also land in /filelist and the first-run cache).
 const DATA_DIR = path.join(REPO_ROOT, 'xonotic', 'data');
+const assetCache = assetCacheMod.create(REPO_ROOT);
 
 const MIME_TYPES = {
 	'.html': 'text/html',
@@ -80,7 +82,7 @@ function coopHeaders(req, extra) {
 	if (origin) {
 		headers['Access-Control-Allow-Origin'] = origin;
 		headers['Access-Control-Allow-Credentials'] = 'true';
-		headers['Access-Control-Allow-Headers'] = 'Content-Type, Range, X-DP-User-Agent, X-DP-Referer';
+		headers['Access-Control-Allow-Headers'] = 'Content-Type, Range, X-DP-User-Agent, X-DP-Referer, X-Xon-Server';
 		headers['Access-Control-Allow-Methods'] = 'GET, HEAD, POST, OPTIONS';
 	}
 	return Object.assign(headers, extra || {});
@@ -224,9 +226,143 @@ function hostIsBlocked(hostname) {
 	return false;
 }
 
-function proxyRemoteUrl(targetUrl, req, res, hops) {
+function serveCachedAsset(req, res, hit, contentType) {
+	const type = contentType || (hit.meta && hit.meta.contentType) || 'application/octet-stream';
+	res.writeHead(200, coopHeaders(req, {
+		'Content-Type': type,
+		'Content-Length': hit.size,
+		'Cache-Control': 'public, max-age=604800',
+		'X-Asset-Cache': 'HIT',
+	}));
+	if (req.method === 'HEAD') {
+		res.end();
+		return;
+	}
+	fs.createReadStream(hit.bin).pipe(res);
+}
+
+function finishInflight(cacheUrl, ok) {
+	const waiters = assetCache.inflight.get(cacheUrl);
+	assetCache.inflight.delete(cacheUrl);
+	if (!waiters) return;
+	for (let i = 0; i < waiters.length; i++) {
+		try { waiters[i](ok); } catch (e) { /* ignore */ }
+	}
+}
+
+function teeUpstreamToCacheAndRes(up, req, res, cacheUrl, outHeaders, cacheOpts) {
+	const writer = assetCache.createWriter(cacheUrl);
+	res.writeHead(200, coopHeaders(req, outHeaders));
+	if (req.method === 'HEAD') {
+		up.resume();
+		res.end();
+		writer.abort();
+		finishInflight(cacheUrl, false);
+		return;
+	}
+	let seen = 0;
+	let failed = false;
+	let paused = false;
+	let ended = false;
+
+	function fail() {
+		if (failed) return;
+		failed = true;
+		writer.abort();
+		up.destroy();
+		if (!res.destroyed && !res.writableEnded) res.destroy();
+		finishInflight(cacheUrl, false);
+	}
+
+	function maybeResume() {
+		if (!paused || failed) return;
+		paused = false;
+		up.resume();
+	}
+
+	up.on('data', function (chunk) {
+		if (failed) return;
+		seen += chunk.length;
+		if (seen > CURLPROXY_MAX_BYTES) {
+			fail();
+			return;
+		}
+		const okFile = writer.write(chunk);
+		let okRes = true;
+		try {
+			if (!res.destroyed && !res.writableEnded)
+				okRes = res.write(chunk);
+		} catch (e) {
+			okRes = true;
+		}
+		if (!okFile || !okRes) {
+			paused = true;
+			up.pause();
+			if (!okFile) writer.once('drain', maybeResume);
+			if (!okRes) res.once('drain', maybeResume);
+		}
+	});
+	up.on('end', function () {
+		if (failed) return;
+		ended = true;
+		writer.commit({
+			contentType: outHeaders['Content-Type'],
+			gameServer: cacheOpts && cacheOpts.gameServer,
+		}, function (err) {
+			if (!res.destroyed && !res.writableEnded) res.end();
+			if (err) {
+				console.error('asset cache commit failed: ' + err.message);
+				finishInflight(cacheUrl, false);
+				return;
+			}
+			console.log('asset cache STORE ' + cacheUrl + ' (' + seen + ' bytes)');
+			finishInflight(cacheUrl, true);
+		});
+	});
+	up.on('error', fail);
+	up.on('close', function () {
+		if (!failed && !ended) fail();
+	});
+	res.on('close', function () {
+		// Client gone: keep filling the cache so the next join is a hit.
+	});
+}
+
+function proxyRemoteUrl(targetUrl, req, res, hops, cacheOpts) {
 	hops = hops || 0;
+	cacheOpts = cacheOpts || {};
+	if (!cacheOpts.cacheUrl) cacheOpts.cacheUrl = targetUrl;
+	const cacheUrl = cacheOpts.cacheUrl;
+	const canCache = !!(cacheOpts.enabled && req.method !== 'POST');
+
+	if (hops === 0 && canCache) {
+		const hit = assetCache.lookup(cacheUrl);
+		if (hit) {
+			assetCache.touch(cacheUrl, cacheOpts.gameServer);
+			console.log('asset cache HIT ' + cacheUrl + ' (' + hit.size + ' bytes)');
+			serveCachedAsset(req, res, hit, cacheOpts.contentType);
+			return;
+		}
+		if (assetCache.inflight.has(cacheUrl)) {
+			console.log('asset cache WAIT ' + cacheUrl);
+			assetCache.inflight.get(cacheUrl).push(function (ok) {
+				if (res.destroyed || res.headersSent) return;
+				const hit2 = ok ? assetCache.lookup(cacheUrl) : null;
+				if (hit2) {
+					assetCache.touch(cacheUrl, cacheOpts.gameServer);
+					serveCachedAsset(req, res, hit2, cacheOpts.contentType);
+					return;
+				}
+				res.writeHead(502, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+				res.end('upstream failed');
+			});
+			return;
+		}
+		assetCache.inflight.set(cacheUrl, []);
+	}
+
 	if (hops > 5) {
+		if (canCache) finishInflight(cacheUrl, false);
 		res.writeHead(502, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 		res.end('too many redirects');
 		return;
@@ -235,16 +371,19 @@ function proxyRemoteUrl(targetUrl, req, res, hops) {
 	try {
 		parsed = new URL(targetUrl);
 	} catch (e) {
+		if (canCache) finishInflight(cacheUrl, false);
 		res.writeHead(400, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 		res.end('bad url');
 		return;
 	}
 	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		if (canCache) finishInflight(cacheUrl, false);
 		res.writeHead(400, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 		res.end('unsupported scheme');
 		return;
 	}
 	if (hostIsBlocked(parsed.hostname)) {
+		if (canCache) finishInflight(cacheUrl, false);
 		res.writeHead(403, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 		res.end('host not allowed');
 		return;
@@ -273,15 +412,17 @@ function proxyRemoteUrl(targetUrl, req, res, hops) {
 			try {
 				next = new URL(up.headers.location, parsed).toString();
 			} catch (e) {
+				if (canCache) finishInflight(cacheUrl, false);
 				res.writeHead(502, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 				res.end('bad redirect');
 				return;
 			}
-			proxyRemoteUrl(next, req, res, hops + 1);
+			proxyRemoteUrl(next, req, res, hops + 1, cacheOpts);
 			return;
 		}
 		if (code !== 200) {
 			up.resume();
+			if (canCache) finishInflight(cacheUrl, false);
 			res.writeHead(code, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 			res.end('upstream ' + code);
 			return;
@@ -289,16 +430,22 @@ function proxyRemoteUrl(targetUrl, req, res, hops) {
 		const len = parseInt(up.headers['content-length'] || '0', 10);
 		if (len > CURLPROXY_MAX_BYTES) {
 			up.destroy();
+			if (canCache) finishInflight(cacheUrl, false);
 			res.writeHead(413, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 			res.end('too large');
 			return;
 		}
 		const outHeaders = {
-			'Content-Type': up.headers['content-type'] || 'application/octet-stream',
+			'Content-Type': cacheOpts.contentType || up.headers['content-type'] || 'application/octet-stream',
 			'Cache-Control': 'public, max-age=604800',
+			'X-Asset-Cache': canCache ? 'MISS' : 'BYPASS',
 		};
 		if (up.headers['content-length'])
 			outHeaders['Content-Length'] = up.headers['content-length'];
+		if (canCache) {
+			teeUpstreamToCacheAndRes(up, req, res, cacheUrl, outHeaders, cacheOpts);
+			return;
+		}
 		res.writeHead(200, coopHeaders(req, outHeaders));
 		let seen = 0;
 		up.on('data', function (chunk) {
@@ -312,12 +459,14 @@ function proxyRemoteUrl(targetUrl, req, res, hops) {
 	});
 	upstream.on('timeout', function () {
 		upstream.destroy();
+		if (canCache && !res.headersSent) finishInflight(cacheUrl, false);
 		if (!res.headersSent) {
 			res.writeHead(504, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 			res.end('timeout');
 		}
 	});
 	upstream.on('error', function (err) {
+		if (canCache && !res.headersSent) finishInflight(cacheUrl, false);
 		if (!res.headersSent) {
 			res.writeHead(502, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 			res.end('proxy error: ' + err.message);
@@ -427,6 +576,12 @@ const server = http.createServer((req, res) => {
 
 	applyCoop(req, res);
 
+	if (urlPath === '/assetcache') {
+		res.writeHead(200, coopHeaders(req, { 'Content-Type': 'application/json' }));
+		res.end(JSON.stringify(assetCache.stats()));
+		return;
+	}
+
 	// Handle /404stats endpoint - returns JSON of 404 paths and counts
 	if (urlPath === '/404stats') {
 		res.writeHead(200, coopHeaders(req, { 'Content-Type': 'application/json' }));
@@ -507,43 +662,41 @@ const server = http.createServer((req, res) => {
 		const qs = (req.url.split('?')[1] || '');
 		const params = new URLSearchParams(qs);
 		const target = params.get('url') || '';
+		const gameServer = params.get('server') || req.headers['x-xon-server'] || '';
 		if (!target) {
 			res.writeHead(400, coopHeaders(req, { 'Content-Type': 'text/plain' }));
 			res.end('missing url');
 			return;
 		}
 		console.log('Proxying curl download: ' + target);
-		proxyRemoteUrl(target, req, res, 0);
+		proxyRemoteUrl(target, req, res, 0, {
+			enabled: req.method !== 'POST',
+			gameServer: gameServer,
+			cacheUrl: target,
+		});
 		return;
 	}
 
 	// Handle /mapdl/<filename> - proxy map pk3 downloads from community CDN
-	// This avoids CORS issues with direct browser-to-CDN fetches
+	// This avoids CORS issues with direct browser-to-CDN fetches. Successful
+	// GET bodies are kept under .cache/assets/ for 3 days (keyed by CDN host).
 	if (urlPath.startsWith('/mapdl/')) {
 		const filename = urlPath.substring('/mapdl/'.length);
+		if (!filename || filename.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.pk3$/i.test(filename)) {
+			res.writeHead(400, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+			res.end('bad filename');
+			return;
+		}
+		const qs = (req.url.split('?')[1] || '');
+		const params = new URLSearchParams(qs);
+		const gameServer = params.get('server') || req.headers['x-xon-server'] || '';
 		const cdnUrl = 'http://dl.xonotic.fps.gratis/' + filename;
 		console.log('Proxying map download: ' + filename + ' from ' + cdnUrl);
-		
-		const http = require('http');
-		const proxyReq = http.get(cdnUrl, function(proxyRes) {
-			if (proxyRes.statusCode !== 200) {
-				console.log('CDN returned ' + proxyRes.statusCode + ' for ' + filename);
-				res.writeHead(proxyRes.statusCode);
-				res.end();
-				return;
-			}
-			const contentLength = proxyRes.headers['content-length'] || 0;
-			res.writeHead(200, coopHeaders(req, {
-				'Content-Type': 'application/zip',
-				'Content-Length': contentLength,
-				'Cache-Control': 'public, max-age=604800',
-			}));
-			proxyRes.pipe(res);
-		});
-		proxyReq.on('error', function(err) {
-			console.error('Map download proxy error:', err.message);
-			res.writeHead(502);
-			res.end('Proxy error: ' + err.message);
+		proxyRemoteUrl(cdnUrl, req, res, 0, {
+			enabled: true,
+			gameServer: gameServer,
+			contentType: 'application/zip',
+			cacheUrl: cdnUrl,
 		});
 		return;
 	}
@@ -638,9 +791,16 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
+	const swept = assetCache.sweep();
 	console.log(`Xonotic WASM server running at http://localhost:${PORT}/`);
 	console.log(`Web files: ${WEB_DIR}`);
 	console.log(`Game assets: ${ASSETS_DIR}`);
 	console.log(`Data fallback: ${DATA_DIR}`);
+	console.log(`Asset cache: ${assetCache.root} (ttl ${assetCache.ttlMs / 86400000}d, swept ${swept})`);
 	console.log(`Press Ctrl+C to stop`);
 });
+
+setInterval(function () {
+	const n = assetCache.sweep();
+	if (n) console.log('asset cache sweep removed ' + n + ' expired entries');
+}, 60 * 60 * 1000).unref();
