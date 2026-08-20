@@ -216,6 +216,55 @@
 		return names;
 	}
 
+	// Lump 0 is ASCII entities. target_speaker / misc_sound use noise* keys;
+	// those files live in xonotic-maps.pk3dir/sound and are not in /filelist.
+	function parseBspSounds(bsp) {
+		if (!bsp || bsp.length < 16) return [];
+		var ident = String.fromCharCode(bsp[0], bsp[1], bsp[2], bsp[3]);
+		if (ident !== 'IBSP') return [];
+		var off = u32(bsp, 8);
+		var len = u32(bsp, 8 + 4);
+		if (off + len > bsp.length || len <= 0) return [];
+		var text = new TextDecoder('latin1').decode(bsp.subarray(off, off + len));
+		var names = [];
+		var seen = {};
+		function add(s) {
+			if (!s) return;
+			s = String(s).replace(/\\/g, '/').replace(/^\/+/, '');
+			if (s.indexOf('/') === -1 && s.indexOf('.') === -1) return;
+			if (seen[s]) return;
+			seen[s] = 1;
+			names.push(s);
+		}
+		var keyRe = /"(noise\d*|sound|wav|music|noise_start|noise_stop|noise_inside|noise_outside)"\s+"([^"]+)"/gi;
+		var m;
+		while ((m = keyRe.exec(text))) add(m[2]);
+		var pathRe = /"(sound\/[^"\n]+\.(?:wav|ogg)|[^"\s]+\/[^"\s]+\.(?:wav|ogg))"/gi;
+		while ((m = pathRe.exec(text))) add(m[1]);
+		return names;
+	}
+
+	function soundRelCandidates(name) {
+		var p = String(name || '').replace(/^\/+/, '').replace(/\\/g, '/');
+		var out = [];
+		function add(x) {
+			if (!x || out.indexOf(x) !== -1) return;
+			out.push(x);
+		}
+		function addExt(x) {
+			if (/\.(wav|ogg)$/i.test(x)) {
+				add(x);
+				if (/\.wav$/i.test(x)) add(x.replace(/\.wav$/i, '.ogg'));
+			} else {
+				add(x + '.wav');
+				add(x + '.ogg');
+			}
+		}
+		addExt(p);
+		if (p.indexOf('sound/') !== 0) addExt('sound/' + p);
+		return out;
+	}
+
 	function readdirSafe(dir) {
 		var FS = fsObj();
 		if (!FS) return [];
@@ -446,7 +495,7 @@
 
 	function prefetch(mapName, onProgress) {
 		var progress = onProgress || function () {};
-		var stats = { shaders: 0, images: 0, skipped: 0, missing: 0, cached: 0, bsp: null };
+		var stats = { shaders: 0, images: 0, sounds: 0, skipped: 0, missing: 0, cached: 0, bsp: null };
 
 		function report(status, percent) {
 			progress({ status: status, percent: percent || 0, stats: stats });
@@ -466,7 +515,8 @@
 			}
 			stats.bsp = true;
 			var shaderNames = parseBspTextures(bsp);
-			console.log('[map-assets] ' + mapName + ' references ' + shaderNames.length + ' shaders');
+			var soundNames = parseBspSounds(bsp);
+			console.log('[map-assets] ' + mapName + ' references ' + shaderNames.length + ' shaders, ' + soundNames.length + ' sounds');
 			report('Fetching shader scripts…', 8);
 
 			return dirlist('xonotic-maps.pk3dir/scripts').then(function (scriptFiles) {
@@ -621,6 +671,28 @@
 							});
 						});
 					}).then(function () {
+						if (!soundNames.length) return null;
+						report('Downloading sounds (0/' + soundNames.length + ')…', 92);
+						var soundDone = 0;
+						return pool(soundNames, CONCURRENCY, function (snd) {
+							var rels = [];
+							var cands = soundRelCandidates(snd);
+							for (var i = 0; i < cands.length; i++) {
+								var gd = gamedirRels(cands[i]);
+								for (var j = 0; j < gd.length; j++) rels.push(gd[j]);
+							}
+							return fetchFirstHit(rels).then(function (r) {
+								soundDone++;
+								if (!r || r.missing) stats.missing++;
+								else if (r.skipped) stats.skipped++;
+								else stats.sounds++;
+								if (soundDone === soundNames.length || soundDone % 4 === 0) {
+									report('Downloading sounds (' + soundDone + '/' + soundNames.length + ')…', 92);
+								}
+								return r;
+							});
+						});
+					}).then(function () {
 						report('Saving texture cache…', 97);
 						return persistIdbfs();
 					}).then(function () {
@@ -637,5 +709,6 @@
 		prefetch: prefetch,
 		findBsp: findBsp,
 		parseBspTextures: parseBspTextures,
+		parseBspSounds: parseBspSounds,
 	};
 })(typeof window !== 'undefined' ? window : this);

@@ -115,7 +115,7 @@ Edit `web/pre.js` and nothing in the running game changes.
 - Do not flatten `*.pk3dir` folders or re-encode `.tga` / `.ogg`.
 - Paths in new code must be repo-relative or derived from `__dirname` / `process.cwd()`, never `/data/jake/...`.
 - After a user-visible change, drive the client with [test/AGENTS.md](test/AGENTS.md) (`stack` + `client` CLIs), then **look at** the canvas shots and `state.json`. Do not claim “connect works” from a Join-dialog screenshot. Do not claim two-player from a live-view still or a spectator overlay. Do not add Playwright.
-- Two-client / non-xoylent dedicated: follow [test/AGENTS.md](test/AGENTS.md) Hitches (`--map` needs the pk3 in `xonotic/data/`, IDBFS seed, 30s menu fallback, idle-spectate at 60s).
+- Two-client / non-xoylent dedicated: follow [test/AGENTS.md](test/AGENTS.md) Hitches (`--map` needs the pk3 in `xonotic/data/`, IDBFS seed, idle-spectate at 60s).
 
 ## License
 

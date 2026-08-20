@@ -3,8 +3,10 @@
 // Serves web files and game assets with proper headers for SharedArrayBuffer
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const { URL } = require('url');
 
 const PORT = 9080;
 const REPO_ROOT = path.join(__dirname, '..');
@@ -78,8 +80,8 @@ function coopHeaders(req, extra) {
 	if (origin) {
 		headers['Access-Control-Allow-Origin'] = origin;
 		headers['Access-Control-Allow-Credentials'] = 'true';
-		headers['Access-Control-Allow-Headers'] = 'Content-Type, Range';
-		headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS';
+		headers['Access-Control-Allow-Headers'] = 'Content-Type, Range, X-DP-User-Agent, X-DP-Referer';
+		headers['Access-Control-Allow-Methods'] = 'GET, HEAD, POST, OPTIONS';
 	}
 	return Object.assign(headers, extra || {});
 }
@@ -195,6 +197,137 @@ function walkFiles(dir, base, out, seen, cap) {
 // Track 404s for debugging
 const notFoundPaths = new Set();
 const notFoundCounts = {};
+
+// Engine autodownload (sv_curl) hits third-party HTTP from WASM. COEP/CORS
+// block that in the browser, so we proxy GET/POST here. Same idea as /mapdl/.
+const CURLPROXY_MAX_BYTES = 256 * 1024 * 1024;
+const CURLPROXY_TIMEOUT_MS = 120000;
+
+function hostIsBlocked(hostname) {
+	if (!hostname) return true;
+	const h = String(hostname).replace(/^\[|\]$/g, '').toLowerCase();
+	if (h === 'localhost' || h === '::1' || h === '0.0.0.0') return true;
+	if (h.endsWith('.local') || h.endsWith('.localhost')) return true;
+	if (h === 'metadata.google.internal') return true;
+	const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+	if (m) {
+		const a = +m[1], b = +m[2];
+		if (a === 0 || a === 10 || a === 127 || a === 255) return true;
+		if (a === 169 && b === 254) return true;
+		if (a === 172 && b >= 16 && b <= 31) return true;
+		if (a === 192 && b === 168) return true;
+		if (a === 100 && b >= 64 && b <= 127) return true;
+		if (a === 198 && (b === 18 || b === 19)) return true;
+	}
+	if (h === '::' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd'))
+		return true;
+	return false;
+}
+
+function proxyRemoteUrl(targetUrl, req, res, hops) {
+	hops = hops || 0;
+	if (hops > 5) {
+		res.writeHead(502, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+		res.end('too many redirects');
+		return;
+	}
+	let parsed;
+	try {
+		parsed = new URL(targetUrl);
+	} catch (e) {
+		res.writeHead(400, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+		res.end('bad url');
+		return;
+	}
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		res.writeHead(400, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+		res.end('unsupported scheme');
+		return;
+	}
+	if (hostIsBlocked(parsed.hostname)) {
+		res.writeHead(403, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+		res.end('host not allowed');
+		return;
+	}
+	const lib = parsed.protocol === 'https:' ? https : http;
+	const headers = {
+		'User-Agent': req.headers['x-dp-user-agent'] || req.headers['user-agent'] || 'DarkPlaces-WASM',
+	};
+	if (req.headers['x-dp-referer'])
+		headers['Referer'] = req.headers['x-dp-referer'];
+	if (req.headers['content-type'] && req.method === 'POST')
+		headers['Content-Type'] = req.headers['content-type'];
+	const opts = {
+		hostname: parsed.hostname,
+		port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+		path: parsed.pathname + parsed.search,
+		method: req.method === 'POST' ? 'POST' : 'GET',
+		headers: headers,
+		timeout: CURLPROXY_TIMEOUT_MS,
+	};
+	const upstream = lib.request(opts, function (up) {
+		const code = up.statusCode || 0;
+		if (code >= 300 && code < 400 && up.headers.location) {
+			up.resume();
+			let next;
+			try {
+				next = new URL(up.headers.location, parsed).toString();
+			} catch (e) {
+				res.writeHead(502, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+				res.end('bad redirect');
+				return;
+			}
+			proxyRemoteUrl(next, req, res, hops + 1);
+			return;
+		}
+		if (code !== 200) {
+			up.resume();
+			res.writeHead(code, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+			res.end('upstream ' + code);
+			return;
+		}
+		const len = parseInt(up.headers['content-length'] || '0', 10);
+		if (len > CURLPROXY_MAX_BYTES) {
+			up.destroy();
+			res.writeHead(413, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+			res.end('too large');
+			return;
+		}
+		const outHeaders = {
+			'Content-Type': up.headers['content-type'] || 'application/octet-stream',
+			'Cache-Control': 'public, max-age=604800',
+		};
+		if (up.headers['content-length'])
+			outHeaders['Content-Length'] = up.headers['content-length'];
+		res.writeHead(200, coopHeaders(req, outHeaders));
+		let seen = 0;
+		up.on('data', function (chunk) {
+			seen += chunk.length;
+			if (seen > CURLPROXY_MAX_BYTES) {
+				up.destroy();
+				res.destroy();
+			}
+		});
+		up.pipe(res);
+	});
+	upstream.on('timeout', function () {
+		upstream.destroy();
+		if (!res.headersSent) {
+			res.writeHead(504, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+			res.end('timeout');
+		}
+	});
+	upstream.on('error', function (err) {
+		if (!res.headersSent) {
+			res.writeHead(502, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+			res.end('proxy error: ' + err.message);
+		}
+	});
+	if (req.method === 'POST')
+		req.pipe(upstream);
+	else
+		upstream.end();
+}
 
 // Harness live views listen on 9322/9323. Those ports are often filtered on
 // the LAN even when :9080 works, so we also serve them here.
@@ -365,6 +498,22 @@ const server = http.createServer((req, res) => {
 		const files = findLocalMapPk3s(name);
 		res.writeHead(200, coopHeaders(req, { 'Content-Type': 'application/json' }));
 		res.end(JSON.stringify({ name: name, files: files, count: files.length }));
+		return;
+	}
+
+	// Engine sv_curl autodownload: browser fetch of the server's HTTP URL
+	// would fail COEP/CORS, so WASM curl goes through here.
+	if (urlPath === '/curlproxy') {
+		const qs = (req.url.split('?')[1] || '');
+		const params = new URLSearchParams(qs);
+		const target = params.get('url') || '';
+		if (!target) {
+			res.writeHead(400, coopHeaders(req, { 'Content-Type': 'text/plain' }));
+			res.end('missing url');
+			return;
+		}
+		console.log('Proxying curl download: ' + target);
+		proxyRemoteUrl(target, req, res, 0);
 		return;
 	}
 

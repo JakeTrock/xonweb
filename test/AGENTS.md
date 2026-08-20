@@ -397,7 +397,7 @@ Observed on a local dedicated **mint** 2p run (`stack start --map mint`). Workar
 |---|---|---|
 | Extra map is only under `assets/game/` | Dedicated log never `SpawnServer: mint` (or loads xoylent). WASM can still `pick --map mint` because `/filelist` has the pk3 | `cp -f assets/game/xonotic-maps.pk3dir/<map>.pk3 xonotic/data/<map>.pk3` **before** `stack start --map <map>`. Dedicated basedir is `xonotic/`, not `assets/`. See [../assets/AGENTS.md](../assets/AGENTS.md) and [../xonotic/AGENTS.md](../xonotic/AGENTS.md) |
 | `stack start` prints `dedicated.ok: false` / `getinfo timeout` | Pid is alive; log already has `SpawnServer:` / `Server spawned.` | Wait a few seconds, `stack status`. Do not `stop`/`start` — that appends to the same dedicated log and looks like a map cycle |
-| Overlay stuck on “Loading engine…” | js log: `Engine started, waiting for menu QC...`; `phase` still `loading` | `forceqmenu 1` skips menu QC. HTML has a **30s fallback** then `showClickToPlay` / server browser. `wait-phase browser --timeout 180`. Do not kill Chrome |
+| Overlay stuck on “Loading engine…” | `phase` still `loading` after Play | `onEngineReady` should call `showClickToPlay` immediately (`forceqmenu 1` skips menu QC). If the overlay stays, the engine never reached `callMain`. Do not wait 30s. |
 | chrome-b re-downloads `/filelist` | B js log is not `Skipping 4436 files already in IDBFS cache`; A hitching | Copy `chrome-a/Default/IndexedDB` → `chrome-b/Default/` while **both** Chromes are stopped. Incomplete B (profile much smaller than A) is a torn/partial cache — recopy. Then boot A to `browser` before B’s Play |
 | Local dedicated not in `/slist` | `servers` empty or public-only; `pick` without `--local` fails | `pick --local --map <dedicated map>`. `+sv_public 0` never appears on the master list |
 | HTML browser still up in `match` | `phase: match` but `serverBrowser: true`; Space never reaches SDL | `eval` click `#closeBrowserBtn` before join/Space |
@@ -469,7 +469,7 @@ Console string table they were scraping (still useful for `client wait`):
 - `pick --local` without `--map` (becomes `unknown` / `cts_unknown.pk3`)
 - `stack start --map` for a pack that exists only under `assets/game/` (dedicated will not see it)
 - Treat `getinfo timeout` on a live dedicated pid as a dead stack
-- Treat “Loading engine…” after `Engine started, waiting for menu QC...` as a hang (30s fallback)
+- Treat “Loading engine…” after `Engine started, showing UI...` as a hang (`onEngineReady` should have opened the browser)
 - Sit idle after join — QC spectates at 60s
 - Assume `client stop` reaped Chrome; check the debugging port is free
 - Attach CDP to a leftover `DarkPlaces-Quake` tab after a crash reload

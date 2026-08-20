@@ -731,13 +731,9 @@
 			noInitialRun: true,
 			
 			onEngineReady: function() {
-				console.log('Engine started, waiting for menu QC...');
-				setTimeout(function() {
-					if (!engineStarted) {
-						console.log('Fallback: showing UI after 30s timeout');
-						showClickToPlay();
-					}
-				}, 30000);
+				// forceqmenu 1 skips menu.dat, so "menu: program loaded" never prints.
+				console.log('Engine started, showing UI...');
+				showClickToPlay();
 			},
 		};
 

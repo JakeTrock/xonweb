@@ -40,7 +40,7 @@ Compiled `xonotic/darkplaces/wasm/pre.js` (not `web/pre.js`):
 
 1. `GET /filelist` (every file under this directory — **not** `xonotic/data/`)
 2. Download all of them into MEMFS `/game/<path>` (skip if IDBFS cache version matches `Module.assetVersion`, currently `v2-full`)
-3. There is **no** on-demand FS hook during a frame. Map textures that are not in `/filelist` are fetched **on connect** by `web/map-assets.js` from `/game/` (this tree, then `xonotic/data/`) and cached in IDBFS. The checkerboard notexture is only used if that fetch 404s.
+3. There is **no** on-demand FS hook during a frame. Map textures **and BSP entity sounds** that are not in `/filelist` are fetched **on connect** by `web/map-assets.js` from `/game/` (this tree, then `xonotic/data/`) and cached in IDBFS. The checkerboard notexture is only used if that fetch 404s.
 
 Failed HTTP fetches are marked downloaded and never retried until you bump `assetVersion` or clear IndexedDB.
 
@@ -90,11 +90,11 @@ cp -f assets/game/xonotic-maps.pk3dir/mint.pk3 xonotic/data/mint.pk3
 test/harness/stack start --map mint
 ```
 
-Native `sv_curl` map download does **not** work in WASM (libcurl is `dlopen`, no libcurl in the browser). Options:
+WASM curl uses `GET /curlproxy?url=` (same-origin, COEP-safe) instead of dlopen libcurl. The dedicated can still `stuffcmd` `curl --pak --forthismap --as …`. Options if you want the pack before connect:
 
 1. Pre-seed the pk3 here so `/filelist` includes it (`connectToServer` then skips `/mapdl/` when a `.pk3` **filename** contains the map name)
 2. Call `Module.downloadPack(url, filename)` then `em_exec fs_rescan` (HTML `connectToServer` does this via `/mapdl/` when the pack is not already in MEMFS)
-3. Official texture *sets* (trak6x, phillipk2x, skies, …) live in `xonotic/data/xonotic-maps.pk3dir/` and are **not** copied here. The web server serves them as `/game/` fallback; `map-assets.js` pulls only the files the BSP’s shaders name, then caches them. Do not rsync the whole 2.7 GB `textures/` tree into this directory just to avoid the checkerboard.
+3. Official texture *sets* (trak6x, phillipk2x, skies, …) and map-pack sounds live in `xonotic/data/xonotic-maps.pk3dir/` and are **not** copied here. The web server serves them as `/game/` fallback; `map-assets.js` pulls the files the BSP’s shaders **and entity lump** name, then caches them. Do not rsync the whole 2.7 GB `textures/` tree into this directory just to avoid the checkerboard.
 
 ### Extra untracked pk3s currently in this tree
 
