@@ -609,6 +609,23 @@
 		// --- Engine state ---
 		var engineStarted = false;
 		var menuNavigated = false;
+		var switchingServer = false;
+		var connectSeq = 0;
+
+		function engineExec(cmd) {
+			try {
+				Module.ccall('em_exec', null, ['string'], [cmd]);
+			} catch (e) {
+				console.warn('em_exec failed:', cmd, e && e.message ? e.message : e);
+			}
+		}
+
+		// Leave the current dedicated immediately so a new pick does not keep
+		// the old match running while the next map downloads.
+		function leaveCurrentMatch() {
+			switchingServer = true;
+			engineExec('disconnect');
+		}
 
 		// --- Error notifications ---
 		function showMapError(msg) {
@@ -689,7 +706,9 @@
 				if (typeof text === 'string') {
 					if (text.indexOf('not found in filesystem') !== -1 || text.indexOf('failed to load') !== -1 || text.indexOf('no renderer') !== -1)
 						showMapError(text);
-					if (text.indexOf('Disconnect:') !== -1)
+					if (typeof maybeRecoverMissingMap === 'function')
+						maybeRecoverMissingMap(text);
+					if (text.indexOf('Disconnect:') !== -1 && !switchingServer)
 						showDisconnectToast(text);
 				}
 			},
@@ -702,7 +721,9 @@
 				if (typeof text === 'string') {
 					if (text.indexOf('not found in filesystem') !== -1 || text.indexOf('failed to load') !== -1 || text.indexOf('no renderer') !== -1)
 						showMapError(text);
-					if (text.indexOf('Disconnect:') !== -1)
+					if (typeof maybeRecoverMissingMap === 'function')
+						maybeRecoverMissingMap(text);
+					if (text.indexOf('Disconnect:') !== -1 && !switchingServer)
 						showDisconnectToast(text);
 				}
 			},
@@ -792,13 +813,7 @@
 			
 			console.log('Setting WS proxy: ' + proxyUrl);
 			console.log('Connecting to: ' + addr);
-			
-			try {
-				Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
-				Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
-			} catch(e) {
-				console.error('Connect failed:', e);
-			}
+			connectToServer(addr, 'unknown', proxyUrl);
 		});
 
 		// --- Settings button (re-open settings panel) ---
@@ -975,52 +990,165 @@
 		var mapDlProgress = document.getElementById('mapDlProgress');
 		var mapDlTitle = document.getElementById('mapDlTitle');
 
-		function connectToServer(addr, mapName, proxyUrl) {
-			console.log('Connecting to: ' + addr + ' (map: ' + mapName + ') via ' + proxyUrl);
+		var lastConnectAddr = null;
+		var lastProxyUrl = null;
+		var mapRecoverBusy = false;
+		var mapRecoverFailed = {};
+
+		function rescanFs() {
+			engineExec('fs_rescan');
+			console.log('fs_rescan after map/texture prefetch');
+		}
+
+		function prefetchThen(mapName) {
+			if (!window.xonMapAssets || typeof window.xonMapAssets.prefetch !== 'function') {
+				console.warn('map-assets.js not loaded; skipping texture prefetch');
+				return Promise.resolve();
+			}
+			return window.xonMapAssets.prefetch(mapName, function(info) {
+				mapDlTitle.textContent = 'Loading textures: ' + mapName;
+				mapDlStatus.textContent = info.status || 'Downloading textures...';
+				mapDlProgress.style.width = (info.percent || 0) + '%';
+			});
+		}
+
+		function doConnect(addr, proxyUrl, seq) {
+			if (seq !== undefined && seq !== connectSeq) return;
+			lastConnectAddr = addr;
+			lastProxyUrl = proxyUrl;
+			mapDlOverlay.style.display = 'none';
+			try {
+				engineExec('disconnect');
+				engineExec('em_wss ' + proxyUrl + ' binary');
+				engineExec('connect ' + addr);
+			} catch(e) {
+				console.error('Connect failed:', e);
+			}
+			switchingServer = false;
+		}
+
+		function prepareMapAndConnect(addr, mapName, proxyUrl, seq) {
+			if (seq !== undefined && seq !== connectSeq) return Promise.resolve();
 			mapName = mapName || 'unknown';
 			mapDlTitle.textContent = 'Preparing map: ' + mapName;
 			mapDlStatus.textContent = 'Checking map package...';
 			mapDlProgress.style.width = '0%';
 			mapDlOverlay.style.display = 'block';
-
-			function doConnect() {
-				mapDlOverlay.style.display = 'none';
-				try {
-					Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
-					Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
-				} catch(e) {
-					console.error('Connect failed:', e);
-				}
-			}
-
-			function rescanFs() {
-				try {
-					Module.ccall('em_exec', null, ['string'], ['fs_rescan']);
-					console.log('fs_rescan after map/texture prefetch');
-				} catch(e) {
-					console.warn('fs_rescan failed:', e);
-				}
-			}
-
-			downloadMapPk3(mapName).catch(function(err) {
+			return downloadMapPk3(mapName).catch(function(err) {
 				console.error('Map download failed, continuing with texture prefetch:', err);
 			}).then(function() {
-				if (!window.xonMapAssets || typeof window.xonMapAssets.prefetch !== 'function') {
-					console.warn('map-assets.js not loaded; connecting without texture prefetch');
-					return;
-				}
-				return window.xonMapAssets.prefetch(mapName, function(info) {
-					mapDlTitle.textContent = 'Loading textures: ' + mapName;
-					mapDlStatus.textContent = info.status || 'Downloading textures...';
-					mapDlProgress.style.width = (info.percent || 0) + '%';
-				});
+				if (seq !== undefined && seq !== connectSeq) return;
+				return prefetchThen(mapName);
 			}).then(function() {
+				if (seq !== undefined && seq !== connectSeq) return;
 				rescanFs();
-				doConnect();
+				doConnect(addr, proxyUrl, seq);
 			}).catch(function(err) {
+				if (seq !== undefined && seq !== connectSeq) return;
 				console.error('Texture prefetch failed, connecting anyway:', err);
 				rescanFs();
-				doConnect();
+				doConnect(addr, proxyUrl, seq);
+			});
+		}
+
+		function liveMapName(addr, fallback, proxyUrl) {
+			var httpProxy = String(proxyUrl || 'ws://127.0.0.1:8081').replace(/^ws/, 'http').replace(/\/$/, '');
+			return fetch(httpProxy + '/getinfo?addr=' + encodeURIComponent(addr)).then(function(res) {
+				if (!res.ok) throw new Error('getinfo HTTP ' + res.status);
+				return res.json();
+			}).then(function(info) {
+				if (info && info.mapname) {
+					console.log('Live map for ' + addr + ' is ' + info.mapname + ' (slist said ' + fallback + ', players ' + (info.clients || '?') + ')');
+					return info.mapname;
+				}
+				return fallback;
+			}).catch(function(err) {
+				console.warn('Live getinfo failed, using ' + fallback + ': ' + err.message);
+				return fallback;
+			});
+		}
+
+		function maybeRecoverMissingMap(text) {
+			var m = /Map file 'maps\/([^'/\s]+)\.bsp' not found/i.exec(String(text || ''));
+			if (!m || mapRecoverBusy || !lastConnectAddr) return;
+			var missing = m[1];
+			if (mapRecoverFailed[missing]) return;
+			mapRecoverBusy = true;
+			var seq = ++connectSeq;
+			switchingServer = true;
+			console.log('[map-recover] fetching ' + missing + ' then reconnecting to ' + lastConnectAddr);
+			showMapError('Missing map ' + missing + ' — downloading and reconnecting…');
+			var proxyUrl = lastProxyUrl || (document.getElementById('wsProxyUrl') || {}).value || 'ws://127.0.0.1:8081';
+			var addr = lastConnectAddr;
+			downloadMapPk3(missing).then(function() {
+				if (seq !== connectSeq) return;
+				return prefetchThen(missing);
+			}).then(function() {
+				if (seq !== connectSeq) return;
+				rescanFs();
+				doConnect(addr, proxyUrl, seq);
+			}).catch(function(err) {
+				if (seq !== connectSeq) return;
+				console.error('[map-recover] failed for ' + missing + ':', err);
+				mapRecoverFailed[missing] = true;
+				showMapError('Could not download map ' + missing);
+				switchingServer = false;
+			}).then(function() {
+				mapRecoverBusy = false;
+			});
+		}
+
+		function connectToServer(addr, mapName, proxyUrl) {
+			var seq = ++connectSeq;
+			console.log('Connecting to: ' + addr + ' (map: ' + mapName + ') via ' + proxyUrl);
+			mapName = mapName || 'unknown';
+			mapDlTitle.textContent = 'Preparing map: ' + mapName;
+			mapDlStatus.textContent = 'Leaving current match...';
+			mapDlProgress.style.width = '0%';
+			mapDlOverlay.style.display = 'block';
+			lastConnectAddr = addr;
+			lastProxyUrl = proxyUrl;
+			leaveCurrentMatch();
+			mapDlStatus.textContent = 'Checking current server map...';
+			liveMapName(addr, mapName, proxyUrl).then(function(live) {
+				if (seq !== connectSeq) return;
+				return prepareMapAndConnect(addr, live || mapName, proxyUrl, seq);
+			});
+		}
+
+		function writePackToMemfs(filename, buffer) {
+			try { FS.mkdir('/game/xonotic-maps.pk3dir'); } catch (e) { /* exists */ }
+			var stream = FS.open('/game/xonotic-maps.pk3dir/' + filename, 'w');
+			FS.write(stream, buffer, 0, buffer.byteLength);
+			FS.close(stream);
+		}
+
+		function downloadPackCached(url, filename) {
+			if (typeof caches === 'undefined')
+				return Module.downloadPack(url, filename);
+			return caches.open('xon-postboot-v1').then(function(cache) {
+				return cache.match(url).then(function(hit) {
+					if (hit && hit.ok) {
+						return hit.arrayBuffer().then(function(ab) {
+							var buf = new Uint8Array(ab);
+							writePackToMemfs(filename, buf);
+							console.log('[downloadPack] Cache Storage hit ' + url + ' (' + buf.byteLength + ' bytes)');
+							return new Promise(function(resolve) {
+								try {
+									FS.syncfs(false, function(err) {
+										if (err) console.warn('[downloadPack] IDBFS sync failed:', err);
+										resolve();
+									});
+								} catch (e) { resolve(); }
+							});
+						});
+					}
+					return Module.downloadPack(url, filename).then(function() {
+						return fetch(url, { cache: 'force-cache' }).then(function(res) {
+							if (res && res.ok) return cache.put(url, res);
+						}).catch(function() {});
+					});
+				});
 			});
 		}
 
@@ -1061,9 +1189,34 @@
 			mapDlProgress.style.width = '0%';
 			mapDlOverlay.style.display = 'block';
 
-			// Try multiple CDN URL patterns for the map pk3
-			// The Xonotic community CDN is at dl.xonotic.fps.gratis
-			// Map naming conventions vary: <mapname>.pk3, cts_<mapname>.pk3, etc.
+			function afterPack(filename) {
+				mapDlStatus.textContent = 'Installing map package...';
+				mapDlProgress.style.width = '50%';
+				try {
+					Module.ccall('em_exec', null, ['string'], ['fs_rescan']);
+					console.log('fs_rescan called after downloading ' + filename);
+				} catch(e) { console.warn('fs_rescan failed:', e); }
+			}
+
+			function findLocalHashedPack() {
+				return fetch('/mapfind?name=' + encodeURIComponent(mapName)).then(function(res) {
+					if (!res.ok) throw new Error('mapfind HTTP ' + res.status);
+					return res.json();
+				}).then(function(j) {
+					var files = (j && j.files) || [];
+					if (!files.length) throw new Error('no local pack for ' + mapName);
+					var f = files[0];
+					var filename = f.filename || (f.path && f.path.split('/').pop());
+					mapDlStatus.textContent = 'Installing ' + filename + '...';
+					console.log('Local map pack /game/' + f.path + ' -> xonotic-maps.pk3dir/' + filename);
+					return downloadPackCached('/game/' + f.path, filename).then(function() {
+						afterPack(filename);
+					});
+				});
+			}
+
+			// Official maps are hashed zips under xonotic/data/, not <map>.pk3 on the
+			// community CDN. Try those first; CDN is for extra/community packs.
 			var cdnBase = location.protocol + '//' + location.hostname + ':9080/mapdl/';
 			var candidates = [
 				mapName + '.pk3',
@@ -1080,20 +1233,18 @@
 				var url = cdnBase + filename;
 				mapDlStatus.textContent = 'Trying ' + filename + '...';
 
-				return Module.downloadPack(url, filename).then(function() {
-					mapDlStatus.textContent = 'Installing map package...';
-					mapDlProgress.style.width = '50%';
-					try {
-							Module.ccall('em_exec', null, ['string'], ['fs_rescan']);
-							console.log('fs_rescan called after downloading ' + filename);
-						} catch(e) { console.warn('fs_rescan failed:', e); }
+				return downloadPackCached(url, filename).then(function() {
+					afterPack(filename);
 				}).catch(function(err) {
 					console.log('Candidate ' + filename + ' failed: ' + err.message);
 					return tryNextCandidate(idx + 1);
 				});
 			}
 
-			return tryNextCandidate(0);
+			return findLocalHashedPack().catch(function(err) {
+				console.log('Local pack miss: ' + err.message);
+				return tryNextCandidate(0);
+			});
 		}
 
 		window.xonUi = {

@@ -10,6 +10,10 @@
 		'*white': 1, '*black': 1, '*grey': 1, '*gray': 1, '-': 1
 	};
 	var CONCURRENCY = 8;
+	// Post-boot textures/shaders (not in the first-run /filelist). Survives
+	// reloads even when IDBFS sync of the 2.8GB mount has not finished.
+	var ASSET_CACHE_NAME = 'xon-postboot-v1';
+	var assetCachePromise = null;
 
 	function fsObj() {
 		return (global.FS) || (global.Module && global.Module.FS) || null;
@@ -60,6 +64,17 @@
 			var rel = p.indexOf('/game/') === 0 ? p.substring('/game/'.length) : p;
 			global.Module._downloadedFiles.add(rel);
 		}
+	}
+
+	function getAssetCache() {
+		if (typeof caches === 'undefined') return Promise.resolve(null);
+		if (!assetCachePromise) {
+			assetCachePromise = caches.open(ASSET_CACHE_NAME).catch(function (err) {
+				console.warn('[map-assets] Cache Storage unavailable:', err);
+				return null;
+			});
+		}
+		return assetCachePromise;
 	}
 
 	function persistIdbfs() {
@@ -273,14 +288,36 @@
 	function fetchToMemfs(relPath) {
 		var dest = '/game/' + relPath;
 		if (fileExists(dest)) return Promise.resolve({ path: relPath, skipped: true });
-		return fetch('/game/' + relPath).then(function (res) {
-			if (!res.ok) return { path: relPath, missing: true, status: res.status };
-			return res.arrayBuffer().then(function (ab) {
-				writeFile(dest, new Uint8Array(ab));
-				return { path: relPath, bytes: ab.byteLength };
+		var url = '/game/' + relPath;
+
+		function writeFromBuffer(ab, source) {
+			writeFile(dest, new Uint8Array(ab));
+			return { path: relPath, bytes: ab.byteLength, source: source };
+		}
+
+		return getAssetCache().then(function (cache) {
+			var cachedP = cache ? cache.match(url) : Promise.resolve(undefined);
+			return cachedP.then(function (cached) {
+				if (cached && cached.ok) {
+					return cached.arrayBuffer().then(function (ab) {
+						return writeFromBuffer(ab, 'cache');
+					});
+				}
+				return fetch(url).then(function (res) {
+					if (!res.ok) return { path: relPath, missing: true, status: res.status };
+					var clone = cache ? res.clone() : null;
+					return res.arrayBuffer().then(function (ab) {
+						if (clone && cache) {
+							cache.put(url, clone).catch(function (err) {
+								console.warn('[map-assets] cache.put failed:', err);
+							});
+						}
+						return writeFromBuffer(ab, 'network');
+					});
+				});
 			});
 		}).catch(function (err) {
-			return { path: relPath, missing: true, error: err.message };
+			return { path: relPath, missing: true, error: err && err.message ? err.message : String(err) };
 		});
 	}
 
@@ -409,7 +446,7 @@
 
 	function prefetch(mapName, onProgress) {
 		var progress = onProgress || function () {};
-		var stats = { shaders: 0, images: 0, skipped: 0, missing: 0, bsp: null };
+		var stats = { shaders: 0, images: 0, skipped: 0, missing: 0, cached: 0, bsp: null };
 
 		function report(status, percent) {
 			progress({ status: status, percent: percent || 0, stats: stats });
@@ -476,8 +513,9 @@
 					for (var r = 0; r < shaderResults.length; r++) {
 						var sr = shaderResults[r];
 						if (!sr || sr.missing || sr.error) continue;
-						if (!sr.skipped) stats.shaders++;
-						else stats.skipped++;
+						if (sr.skipped) stats.skipped++;
+						else if (sr.source === 'cache') { stats.cached++; stats.shaders++; }
+						else if (!sr.missing && !sr.error) stats.shaders++;
 						var textBytes = readFile('/game/' + sr.path);
 						if (!textBytes) continue;
 						var text = new TextDecoder('latin1').decode(textBytes);
@@ -574,6 +612,7 @@
 								done++;
 								if (r && r.skipped) stats.skipped++;
 								else if (r && r.missing) stats.missing++;
+								else if (r && r.source === 'cache') { stats.cached++; stats.images++; }
 								else if (r && r.bytes) stats.images++;
 								if (done === toFetch.length || done % 4 === 0) {
 									report('Downloading textures (' + done + '/' + toFetch.length + ')…', 25 + Math.floor(70 * done / total));

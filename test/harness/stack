@@ -21,6 +21,12 @@ const {
 	killPid,
 	sleep,
 } = require('./lib/common');
+const {
+	parseHostPort,
+	probeDirectUdp,
+	probeViaProxy,
+	judgeBridge,
+} = require('./lib/netprobe');
 
 const WEB_PORT = 9080;
 const PROXY_PORT = 8081;
@@ -194,6 +200,38 @@ async function cmdStatus() {
 	process.exitCode = ok ? 0 : 1;
 }
 
+async function cmdNetprobe(flags) {
+	const dest = parseHostPort(flags.addr, DEDICATED_PORT);
+	const count = flags.count || 30;
+	const proxyUrl = 'ws://127.0.0.1:' + PROXY_PORT;
+	const [direct, viaProxy] = await Promise.all([
+		probeDirectUdp(dest.host, dest.port, { count }),
+		probeViaProxy(proxyUrl, dest.host, dest.port, { count }),
+	]);
+	let proxyStats = null;
+	try {
+		const r = await httpGet('http://127.0.0.1:' + PROXY_PORT + '/stats', 2000);
+		proxyStats = JSON.parse(r.body);
+	} catch (e) {
+		proxyStats = { error: e.message };
+	}
+	const verdict = judgeBridge(direct, viaProxy);
+	const out = {
+		at: new Date().toISOString(),
+		addr: dest.host + ':' + dest.port,
+		direct,
+		viaProxy,
+		proxyStats,
+		verdict,
+	};
+	const stack = readJson(STACK_FILE, null);
+	const dir = runDir(stack && stack.runId);
+	const file = path.join(dir, 'netprobe.json');
+	writeJson(file, out);
+	out.file = file;
+	printOut(out);
+}
+
 function cmdLogs(flags) {
 	const stack = readJson(STACK_FILE, null);
 	if (!stack || !stack.runId) throw new Error('no stack run (stack start first)');
@@ -216,13 +254,14 @@ async function main() {
 	const { flags, positional } = parseArgs(process.argv.slice(2));
 	const cmd = positional[0];
 	if (!cmd || cmd === 'help' || cmd === '-h') {
-		process.stderr.write('Usage: test/harness/stack start|status|stop|logs [--svc web|proxy|dedicated] [--map xoylent]\n');
+		process.stderr.write('Usage: test/harness/stack start|status|stop|logs|netprobe [--svc web|proxy|dedicated] [--map xoylent] [--addr host:port] [--count 30]\n');
 		process.exit(cmd ? 0 : 2);
 	}
 	if (cmd === 'start') await cmdStart(flags);
 	else if (cmd === 'stop') cmdStop();
 	else if (cmd === 'status') await cmdStatus();
 	else if (cmd === 'logs') cmdLogs(flags);
+	else if (cmd === 'netprobe') await cmdNetprobe(flags);
 	else throw new Error('unknown command ' + cmd);
 }
 

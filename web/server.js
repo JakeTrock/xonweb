@@ -47,6 +47,25 @@ const MIME_TYPES = {
 	'.shader': 'text/plain',
 };
 
+// Map packs, textures, sounds, models fetched after the first-run /filelist.
+// Long-lived so a second visit does not re-download them over the network.
+// Do not cache .dat/.cfg/.js/.html — those change with gamecode and engine builds.
+const CACHEABLE_EXTS = new Set([
+	'.tga', '.jpg', '.jpeg', '.png', '.pcx', '.dds',
+	'.shader', '.pk3', '.bsp',
+	'.ogg', '.wav', '.mp3',
+	'.iqm', '.md3', '.dpm', '.zym',
+	'.lno', '.waypoints', '.mapinfo',
+]);
+
+function cacheControlFor(urlPath, ext) {
+	if (ext === '.js' || ext === '.html')
+		return 'no-store, no-cache, must-revalidate';
+	if ((urlPath.startsWith('/game/') || urlPath.startsWith('/mapdl/')) && CACHEABLE_EXTS.has(ext))
+		return 'public, max-age=604800';
+	return null;
+}
+
 function coopHeaders(req, extra) {
 	const origin = req && req.headers && req.headers.origin;
 	const headers = {
@@ -90,6 +109,44 @@ function safeRelPath(relPath) {
 		if (parts[i] === '..') return null;
 	}
 	return rel;
+}
+
+// Official compiled maps are hashed zips at xonotic/data/<map>-<hash>-<hash>.pk3,
+// not solarium.pk3 on the community CDN. /mapfind locates those so connectToServer
+// can install them into MEMFS without putting every map on /filelist.
+function findLocalMapPk3s(mapName) {
+	const needle = String(mapName || '').trim().toLowerCase();
+	if (!needle || needle === 'unknown' || needle.length > 64) return [];
+	if (!/^[a-z0-9][a-z0-9._-]*$/.test(needle)) return [];
+	const dirs = [
+		{ dir: path.join(ASSETS_GAME, 'xonotic-maps.pk3dir'), relBase: 'xonotic-maps.pk3dir' },
+		{ dir: path.join(ASSETS_GAME, 'xonotic-data.pk3dir'), relBase: 'xonotic-data.pk3dir' },
+		{ dir: DATA_DIR, relBase: '' },
+		{ dir: path.join(DATA_DIR, 'xonotic-maps.pk3dir'), relBase: 'xonotic-maps.pk3dir' },
+		{ dir: path.join(DATA_DIR, 'xonotic-data.pk3dir'), relBase: 'xonotic-data.pk3dir' },
+	];
+	const out = [];
+	const seen = new Set();
+	for (let d = 0; d < dirs.length; d++) {
+		const spec = dirs[d];
+		let names;
+		try { names = fs.readdirSync(spec.dir); } catch (e) { continue; }
+		for (let i = 0; i < names.length; i++) {
+			const n = names[i];
+			if (!/\.pk3$/i.test(n)) continue;
+			if (n.toLowerCase().indexOf(needle) === -1) continue;
+			const rel = spec.relBase ? spec.relBase + '/' + n : n;
+			if (seen.has(rel)) continue;
+			seen.add(rel);
+			try {
+				const st = fs.statSync(path.join(spec.dir, n));
+				if (!st.isFile()) continue;
+				out.push({ path: rel, size: st.size, filename: n });
+			} catch (e) { /* skip */ }
+		}
+	}
+	out.sort(function (a, b) { return a.filename.length - b.filename.length; });
+	return out;
 }
 
 function resolveGameFile(relPath) {
@@ -301,6 +358,16 @@ const server = http.createServer((req, res) => {
 		return;
 	}
 	
+	if (urlPath === '/mapfind') {
+		const qs = (req.url.split('?')[1] || '');
+		const params = new URLSearchParams(qs);
+		const name = params.get('name') || '';
+		const files = findLocalMapPk3s(name);
+		res.writeHead(200, coopHeaders(req, { 'Content-Type': 'application/json' }));
+		res.end(JSON.stringify({ name: name, files: files, count: files.length }));
+		return;
+	}
+
 	// Handle /mapdl/<filename> - proxy map pk3 downloads from community CDN
 	// This avoids CORS issues with direct browser-to-CDN fetches
 	if (urlPath.startsWith('/mapdl/')) {
@@ -320,6 +387,7 @@ const server = http.createServer((req, res) => {
 			res.writeHead(200, coopHeaders(req, {
 				'Content-Type': 'application/zip',
 				'Content-Length': contentLength,
+				'Cache-Control': 'public, max-age=604800',
 			}));
 			proxyRes.pipe(res);
 		});
@@ -380,11 +448,10 @@ const server = http.createServer((req, res) => {
 		res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
 		res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
 		applyCoop(req, res);
-		
-		// Prevent caching of JS files (so new builds are always served)
-		if (ext === '.js' || ext === '.html') {
-			res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-		}
+		res.setHeader('Last-Modified', stats.mtime.toUTCString());
+
+		const cacheControl = cacheControlFor(urlPath, ext);
+		if (cacheControl) res.setHeader('Cache-Control', cacheControl);
 		
 		// Support range requests for large files
 		const range = req.headers.range;
@@ -394,11 +461,13 @@ const server = http.createServer((req, res) => {
 			const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
 			const chunkSize = end - start + 1;
 			
-			res.writeHead(206, {
+			const rangeHeaders = {
 				'Content-Range': `bytes ${start}-${end}/${stats.size}`,
 				'Accept-Ranges': 'bytes',
 				'Content-Length': chunkSize,
-			});
+			};
+			if (cacheControl) rangeHeaders['Cache-Control'] = cacheControl;
+			res.writeHead(206, rangeHeaders);
 			
 			const stream = fs.createReadStream(resolvedPath, { start, end });
 			stream.pipe(res);

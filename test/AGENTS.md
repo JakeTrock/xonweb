@@ -43,7 +43,10 @@ test/harness/stack start [--map mint]   # web :9080, proxy :8081, dedicated :260
 test/harness/stack status               # health JSON; non-zero if any service down
 test/harness/stack stop
 test/harness/stack logs [--svc web|proxy|dedicated]
+test/harness/stack netprobe [--addr host:port] [--count 30]
 ```
+
+`netprobe` compares **direct UDP `getinfo`** to the same query through `ws://127.0.0.1:8081/?target=…`. That isolates the bridge from SwiftShader hitch. Writes `test/artifacts/<run>/netprobe.json` with `verdict.deficient` / `reasons` (the CLI still exits 0 unless the tool itself failed). Default `--addr` is the local dedicated (`127.0.0.1:26000`). For a public empty server, pass that `ip:port`. Local overhead should be a few milliseconds; tens of ms extra, loss, or WS ping ≫ loopback means the proxy is the hitch.
 
 Health:
 
@@ -171,13 +174,13 @@ test/harness/client pick [--id a] '127.0.0.1:26000' [--map xoylent]
 test/harness/client pick [--id a] --local [--map xoylent] # same address if not in the list
 ```
 
-`pick` clicks a matching browser row when one exists. If the dedicated server is not on `/slist` (typical for `+sv_public 0`), it calls the page’s `connectToServer(addr, map, proxy)` — **map download overlay, texture prefetch, then `em_wss` + `connect`**. That is the second loading step. Do not `exec connect` instead. A checkerboard world means the prefetch did not run or the files 404d (`/404stats`, js log `[map-assets]`).
+`pick` clicks a matching browser row when one exists. If the dedicated server is not on `/slist` (typical for `+sv_public 0`), it calls the page’s `connectToServer(addr, map, proxy)` — **`disconnect` if already in a match**, then map download overlay, texture prefetch, then `em_wss` + `connect`. That is the second loading step. Do not `exec connect` instead. A checkerboard world means the prefetch did not run or the files 404d (`/404stats`, js log `[map-assets]`). A second `pick` while `phase` is `match` must leave the old dedicated (console `Disconnected`) and load the new map — it must not stay on the previous server until timeout.
 
 `servers` hits Refresh and waits briefly for `/slist`. Local-only dedicated may return an empty list; `pick --local` still joins.
 
 Always pass `--map <current>` on `pick --local`. The bridge defaults a missing map name to `'unknown'`, and the overlay then tries `cts_unknown.pk3`. If the dedicated already changed maps (see [../xonotic/AGENTS.md](../xonotic/AGENTS.md)), pick that map, not a stale `xoylent`.
 
-`connectToServer` skips `/mapdl/` when any `.pk3` filename under MEMFS `xonotic-maps.pk3dir` / `xonotic-data.pk3dir` **contains** the map name (`mint.pk3` matches `mint`; js log `Map pk3 already in …`). A preloaded extra pack therefore never hits the overlay. `cts_wheresmucki.pk3` does not match map `wheresmucki` until the overlay tries `cts_<map>.pk3`.
+`connectToServer` skips `/mapdl/` when any `.pk3` filename under MEMFS `xonotic-maps.pk3dir` / `xonotic-data.pk3dir` **contains** the map name (`mint.pk3` matches `mint`; js log `Map pk3 already in …`). Otherwise it tries `GET /mapfind?name=<map>` (hashed official packs in `xonotic/data/<map>-<hash>-<hash>.pk3`) then `/mapdl/<map>.pk3` / `cts_<map>.pk3`. Official maps are **not** on the community CDN as `<map>.pk3`; without `/mapfind` the overlay 404s and the engine later prints `Map file 'maps/<map>.bsp' not found`. A preloaded extra pack therefore never hits the overlay. `cts_wheresmucki.pk3` does not match map `wheresmucki` until the overlay tries `cts_<map>.pk3`.
 
 #### Screenshots
 
@@ -248,6 +251,7 @@ Paths may be `/game/...` or gamedir-relative (`xonotic-data.pk3dir/progs.dat`). 
 test/harness/client state  [--id a]                       # telemetry JSON (see below)
 test/harness/client ui     [--id a]                       # which HTML overlays are visible
 test/harness/client net    [--id a]                       # proxy URL, WS open, last target
+test/harness/client netprobe [--id a] [--seconds 8] [--hz 10]  # sample em_state + GET proxy /stats; writes netprobe.json
 test/harness/client gl     [--id a]                       # WebGL vendor/renderer, context lost?
 test/harness/client cvar   [--id a] <name>                # exec the cvar, capture the `"name" is "value"` line
 test/harness/client players [--id a]                      # last status / server players if printed
@@ -312,8 +316,12 @@ Minimum the agent needs to judge movement and net:
 | `origin` | `[x,y,z]` — `[0,0,0]` is common in spectate and has been seen after a real join; do not fail `join` on this alone |
 | `angles` | view angles |
 | `velocity` | if cheap to export |
-| `frametime` / `fps` | last frame |
-| `ping` | if known |
+| `ping` | scoreboard ping (ms), 0 until `pings` has run |
+| `packetloss` | % of `incoming_netgraph` marked lost |
+| `packetsReceived` / `packetsSent` | `cls.netcon` counters — must increase in `netprobe` |
+| `sinceLastMessage` | seconds since `cls.netcon->lastMessageTime` |
+| `fps` / `frametime` | last client frame (`cl.realframetime`) |
+| `mtime` | latest server snapshot timestamp |
 | `renderer` | GL renderer string |
 | `errors` | recent `Host_Error` / `Connect: failed` |
 
@@ -335,6 +343,7 @@ Scripts do **not** print PASS/FAIL. The agent does, after reading artifacts. A c
 | `move` | `shot before`; `input +forward --seconds 3`; `shot after`; `grab --seconds 2` | shots + origin deltas | no movement; teleport; disconnect |
 | `map-download` | `pick` a server whose map is **not** in MEMFS | `loading-map` overlay; pk3 appears in `fs`; then match | connect with missing map; overlay never finishes |
 | `mp-2p` | two `--id`s through the same flow on a host that can hold two SwiftShader WASM heaps | both `state.connected`; proxy `connections` ≥ 2; dedicated two `is now playing` and no `dropped (Timed out)`; `status` shows both names | either drops; live-view stills from different clocks; only one `connections` |
+| `net` | `stack netprobe` (local and/or `--addr` of an empty public server); in-match `client netprobe --seconds 8` | `verdict.deficient === false`; proxy overhead a few ms vs direct UDP; engine `packetsReceived` rising; no `sinceLastMessage` > 0.5s | proxy p50 tens of ms above direct; getinfo loss; `/stats` drops; stalled `mtime` / origin teleports |
 
 TCP bridge is optional and not part of the base set. Public servers are a product goal; the gated path is local dedicated + proxy.
 

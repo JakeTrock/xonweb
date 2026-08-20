@@ -199,6 +199,10 @@ function parseArgs(argv) {
 		else if (a === '--force') flags.force = true;
 		else if (a === '--map') flags.map = next();
 		else if (a.startsWith('--map=')) flags.map = a.slice(6);
+		else if (a === '--addr') flags.addr = next();
+		else if (a.startsWith('--addr=')) flags.addr = a.slice(7);
+		else if (a === '--count') flags.count = parseInt(next(), 10);
+		else if (a.startsWith('--count=')) flags.count = parseInt(a.slice(8), 10);
 		else if (a.startsWith('--')) throw new Error('unknown flag ' + a);
 		else positional.push(a);
 	}
