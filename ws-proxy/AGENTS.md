@@ -36,7 +36,7 @@ ws://localhost:8081/?target=127.0.0.1:9260&proto=tcp
 node tcp-relay.js --listen=0.0.0.0:9260 --target=127.0.0.1:26000
 ```
 
-Binds `0.0.0.0`. Health: `GET /` → `{ status, service, connections }`. Ctrl+C closes every WS and its UDP/TCP socket.
+Binds `0.0.0.0`. Health: `GET /` → `{ status, service, connections }`. `connections` is the count of **open browser WebSockets** (one per WASM client). Two-player on the local dedicated must show `connections: 2`; `1` means the other tab never opened `em_wss` or already dropped. Ctrl+C closes every WS and its UDP/TCP socket.
 
 ## Protocol
 

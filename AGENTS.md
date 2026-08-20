@@ -100,7 +100,7 @@ In-engine `slist` / master queries do not work (client socket is WebSocket). The
 |---|---|
 | `xonotic/darkplaces/wasm/pre.js` (embedded by `--pre-js`) | `web/pre.js`, `web/original-pre.js` |
 | `xonotic/darkplaces/*.c` patches | `web/darkplaces-wasm.js` (copy after build) |
-| `assets/game/` (what the browser fetches) | `xonotic/data/` (upstream source; not served) |
+| `assets/game/` (what the browser fetches at `/game/`) | `xonotic/data/` (native dedicated `-basedir`; not served). Extra pk3s in `assets/game/` do not make `stack start --map` work until copied here — see [test/AGENTS.md](test/AGENTS.md) Hitches |
 
 Edit `web/pre.js` and nothing in the running game changes.
 
@@ -114,7 +114,8 @@ Edit `web/pre.js` and nothing in the running game changes.
 - Do not `rm -rf` `emsdk/`, `assets/`, `xonotic/`, `*/node_modules`, or `xonotic/darkplaces/build-obj/`.
 - Do not flatten `*.pk3dir` folders or re-encode `.tga` / `.ogg`.
 - Paths in new code must be repo-relative or derived from `__dirname` / `process.cwd()`, never `/data/jake/...`.
-- After a user-visible change, drive the client with [test/AGENTS.md](test/AGENTS.md) (`stack` + `client` CLIs), then **look at** the canvas shots and `state.json`. Do not claim “connect works” from a Join-dialog screenshot. Do not add Playwright.
+- After a user-visible change, drive the client with [test/AGENTS.md](test/AGENTS.md) (`stack` + `client` CLIs), then **look at** the canvas shots and `state.json`. Do not claim “connect works” from a Join-dialog screenshot. Do not claim two-player from a live-view still or a spectator overlay. Do not add Playwright.
+- Two-client / non-xoylent dedicated: follow [test/AGENTS.md](test/AGENTS.md) Hitches (`--map` needs the pk3 in `xonotic/data/`, IDBFS seed, 30s menu fallback, idle-spectate at 60s).
 
 ## License
 

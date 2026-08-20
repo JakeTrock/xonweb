@@ -19,16 +19,17 @@ const {
 	ensureDir,
 	CURRENT_DIR,
 } = require('./lib/common');
-const { withCdp, waitForCdp } = require('./lib/cdp');
+const { withCdp, waitForCdp, httpGetJson } = require('./lib/cdp');
 
 function usage() {
 	process.stderr.write(`Usage: test/harness/client <command> [args] [--id a] [--cdp 9222]
 
-Session:   start [--headed] [--cdp] | stop | ready [--timeout]
+Session:   start [--headed] [--cdp] [--view-port] [--play] | stop | urls | ready [--timeout]
+Flow:      play [--name] | phase | wait-phase <settings|loading|browser|loading-map|match>
+           servers | pick <addr|name|map> [--map] [--local]
 Drive:     exec <cmd> | input <+forward> [--seconds] | wait <regex> | eval <js>
 Shots:     shot [name] [--canvas|--page|--ui] | grab [--seconds] [--hz]
 Console:   con [--tail N] [--grep re] [--since 10s] [--stream engine|html|js|all] [--dump]
-           log  (alias of con --stream all)
 FS:        fs ls|tree|stat|cat|find|has|downloads|compare|404s|filelist [path]
 Other:     state | ui | net | gl | cvar <name> | players
 `);
@@ -81,6 +82,60 @@ function defaultCdp(id) {
 	return 9222 + (n >= 0 ? n : 0);
 }
 
+function defaultView(id) {
+	const n = String(id || 'a').charCodeAt(0) - 'a'.charCodeAt(0);
+	return 9322 + (n >= 0 ? n : 0);
+}
+
+function monitorUrls(session, inspect) {
+	const urls = {
+		live: 'http://127.0.0.1:' + session.viewPort + '/',
+		shot: 'http://127.0.0.1:' + session.viewPort + '/shot.png',
+		devtools: 'http://127.0.0.1:' + session.cdp + '/',
+		json: 'http://127.0.0.1:' + session.cdp + '/json/list',
+	};
+	if (inspect) urls.inspect = inspect;
+	return urls;
+}
+
+function printMonitor(urls) {
+	process.stdout.write('\nMonitor\n');
+	process.stdout.write('  live      ' + urls.live + '\n');
+	process.stdout.write('  frame     ' + urls.shot + '\n');
+	process.stdout.write('  DevTools  ' + urls.devtools + '\n');
+	if (urls.inspect) process.stdout.write('  inspect   ' + urls.inspect + '\n');
+}
+
+async function inspectUrl(cdpPort) {
+	try {
+		const list = await httpGetJson('http://127.0.0.1:' + cdpPort + '/json/list');
+		const page = (list || []).find((t) => t.type === 'page' && /harness/.test(t.url || ''))
+			|| (list || []).find((t) => t.type === 'page')
+			|| (list || [])[0];
+		if (!page) return null;
+		if (page.devtoolsFrontendUrl) {
+			if (/^https?:/i.test(page.devtoolsFrontendUrl)) return page.devtoolsFrontendUrl;
+			return 'http://127.0.0.1:' + cdpPort + page.devtoolsFrontendUrl;
+		}
+		if (page.webSocketDebuggerUrl) {
+			const ws = page.webSocketDebuggerUrl.replace(/^ws:\/\//, '');
+			return 'http://127.0.0.1:' + cdpPort + '/devtools/inspector.html?ws=' + encodeURIComponent(ws);
+		}
+	} catch (e) { /* ignore */ }
+	return null;
+}
+
+function startView(id, cdpPort, viewPort, dir) {
+	const viewScript = path.join(__dirname, 'view');
+	const viewLog = path.join(dir, 'view.log');
+	return spawnLogged(process.execPath, [
+		viewScript,
+		'--id', id,
+		'--cdp', String(cdpPort),
+		'--port', String(viewPort),
+	], viewLog);
+}
+
 async function cmdStart(flags) {
 	const id = flags.id || 'a';
 	const cdpPort = flags.cdp || defaultCdp(id);
@@ -92,16 +147,24 @@ async function cmdStart(flags) {
 	try {
 		const existing = loadSession(id);
 		if (existing && await sessionUsable(existing)) {
-			printOut({ reused: true, id, cdp: existing.cdp, pid: existing.pid, runId: existing.runId });
+			const inspect = await inspectUrl(existing.cdp);
+			const urls = monitorUrls(existing, inspect);
+			printOut({ reused: true, id, cdp: existing.cdp, view: existing.viewPort, pid: existing.pid, runId: existing.runId, urls });
+			printMonitor(urls);
 			return;
 		}
 	} catch (e) { /* no session */ }
+
+	for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+		try { fs.unlinkSync(path.join(profile, name)); } catch (e) { /* ignore */ }
+	}
 
 	const chrome = findChrome();
 	const args = [
 		flags.headed ? null : '--headless=new',
 		'--remote-debugging-port=' + cdpPort,
 		'--remote-debugging-address=127.0.0.1',
+		'--remote-allow-origins=*',
 		'--user-data-dir=' + profile,
 		'--no-first-run',
 		'--no-default-browser-check',
@@ -130,9 +193,14 @@ async function cmdStart(flags) {
 		const pids = out.trim().split('\n').map(Number).filter(Boolean);
 		if (pids.length) pid = pids[pids.length - 1];
 	} catch (e) { /* keep wrapper pid */ }
+	const viewPort = flags.viewPort || defaultView(id);
+	const viewChild = startView(id, cdpPort, viewPort, dir);
+	const inspect = await inspectUrl(cdpPort);
 	const session = {
 		id,
 		cdp: cdpPort,
+		viewPort,
+		viewPid: viewChild.pid,
 		pid,
 		runId,
 		headed: !!flags.headed,
@@ -142,8 +210,23 @@ async function cmdStart(flags) {
 	saveSession(session);
 	await withCdp(cdpPort, async (cdp) => {
 		await waitXon(cdp, 15000);
+		if (flags.play) {
+			await xonCall(cdp, 'play', [{ name: flags.name }]);
+		}
 	});
-	printOut({ started: true, id, cdp: cdpPort, pid: child.pid, runId, log: logPath });
+	const urls = monitorUrls(session, inspect);
+	printOut({
+		started: true,
+		id,
+		cdp: cdpPort,
+		view: viewPort,
+		pid,
+		runId,
+		log: logPath,
+		phase: flags.play ? 'loading' : 'settings',
+		urls,
+	});
+	printMonitor(urls);
 }
 
 function cmdStop(flags) {
@@ -154,8 +237,17 @@ function cmdStop(flags) {
 		return;
 	}
 	killPid(session.pid);
+	killPid(session.viewPid);
 	try { fs.unlinkSync(require('./lib/common').clientSessionFile(id)); } catch (e) { /* ignore */ }
-	printOut({ stopped: true, id, pid: session.pid });
+	printOut({ stopped: true, id, pid: session.pid, viewPid: session.viewPid });
+}
+
+async function cmdUrls(flags) {
+	const session = loadSession(flags.id);
+	const inspect = await inspectUrl(session.cdp);
+	const urls = monitorUrls(session, inspect);
+	printOut({ id: session.id, urls });
+	printMonitor(urls);
 }
 
 async function sessionUsable(session) {
@@ -219,28 +311,87 @@ async function takeShot(cdp, target) {
 	return cdp.screenshot();
 }
 
+function phaseMatches(actual, wanted) {
+	if (!wanted) return false;
+	if (actual === wanted) return true;
+	if (wanted === 'loading' && (actual === 'loading' || actual === 'loading-map' || actual === 'connecting'))
+		return true;
+	return false;
+}
+
 async function cmdReady(flags) {
+	return cmdWaitPhase(flags, 'browser');
+}
+
+async function cmdWaitPhase(flags, wanted) {
+	if (!wanted) throw new Error('wait-phase requires settings|loading|browser|loading-map|connecting|match');
 	const timeout = (flags.timeout || 180) * 1000;
 	const session = loadSession(flags.id);
 	const deadline = Date.now() + timeout;
 	let last = null;
 	while (Date.now() < deadline) {
 		try {
-			const ready = await withCdp(session.cdp, async (cdp) => {
+			const snap = await withCdp(session.cdp, async (cdp) => {
 				await waitXon(cdp, 5000);
-				return cdp.evaluate('!!(window.__xon && window.__xon.ready)', false);
+				return {
+					phase: await cdp.evaluate('window.__xon.phase()', false),
+					ui: await cdp.evaluate('window.__xon.ui()', false),
+				};
 			});
-			if (ready) {
-				printOut({ ready: true, id: session.id });
+			last = snap.phase;
+			if (phaseMatches(snap.phase, wanted)) {
+				printOut({ phase: snap.phase, wanted: wanted, id: session.id, ui: snap.ui });
 				return;
 			}
-			last = 'not ready';
+			if (wanted === 'browser' && snap.phase === 'settings')
+				last = 'settings (run client play first)';
 		} catch (e) {
 			last = e.message;
 		}
 		await sleep(1000);
 	}
-	throw new Error('engine not ready after ' + (flags.timeout || 180) + 's' + (last ? ' (' + last + ')' : ''));
+	throw new Error('still in phase ' + last + ', wanted ' + wanted + ' after ' + (flags.timeout || 180) + 's');
+}
+
+async function cmdPlay(flags) {
+	await withSession(flags, async (cdp, session) => {
+		const value = await xonCall(cdp, 'play', [{ name: flags.name }]);
+		printOut(Object.assign({ id: session.id }, value));
+	});
+}
+
+async function cmdPhase(flags) {
+	await withSession(flags, async (cdp, session) => {
+		const ui = await cdp.evaluate('window.__xon.ui()', false);
+		writeArtifact(session, 'phase.json', JSON.stringify(ui, null, 2) + '\n');
+		printOut(ui);
+	});
+}
+
+async function cmdServers(flags) {
+	await withSession(flags, async (cdp, session) => {
+		try {
+			await xonCall(cdp, 'refreshServers', []);
+			await sleep(2500);
+		} catch (e) { /* list may already be populated */ }
+		const value = await cdp.evaluate('window.__xon.servers()', false);
+		writeArtifact(session, 'servers.json', JSON.stringify(value, null, 2) + '\n');
+		printOut(value);
+	});
+}
+
+async function cmdPick(flags, query) {
+	if (flags.local && !query) query = '127.0.0.1:26000';
+	if (!query) throw new Error('pick requires an address, hostname, map, or --local');
+	const map = flags.map || '';
+	await withSession(flags, async (cdp, session) => {
+		const value = await cdp.evaluate(
+			`window.__xon.pick(${JSON.stringify(query)}, ${JSON.stringify(map)})`,
+			false
+		);
+		writeArtifact(session, 'pick.json', JSON.stringify(value, null, 2) + '\n');
+		printOut(value);
+	});
 }
 
 async function cmdExec(flags, cmd) {
@@ -494,7 +645,13 @@ async function main() {
 	switch (cmd) {
 	case 'start': await cmdStart(flags); break;
 	case 'stop': cmdStop(flags); break;
+	case 'urls': await cmdUrls(flags); break;
 	case 'ready': await cmdReady(flags); break;
+	case 'play': await cmdPlay(flags); break;
+	case 'phase': await cmdPhase(flags); break;
+	case 'wait-phase': await cmdWaitPhase(flags, positional[1]); break;
+	case 'servers': await cmdServers(flags); break;
+	case 'pick': await cmdPick(flags, positional.slice(1).join(' ')); break;
 	case 'exec': await cmdExec(flags, positional.slice(1).join(' ')); break;
 	case 'input': await cmdInput(flags, positional[1]); break;
 	case 'wait': await cmdWait(flags, positional.slice(1).join(' ')); break;

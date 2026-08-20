@@ -179,25 +179,70 @@
 		}
 	}
 
+	function vis(id, showClass) {
+		var el = document.getElementById(id);
+		if (!el) return false;
+		if (el.classList.contains('hidden')) return false;
+		if (showClass && !el.classList.contains(showClass)) return false;
+		if (el.style && el.style.display === 'none') return false;
+		return true;
+	}
+
+	function connectionSnapshot() {
+		try {
+			if (typeof Module !== 'undefined' && typeof Module.ccall === 'function') {
+				var raw = Module.ccall('em_state', 'string', []);
+				if (raw) return JSON.parse(raw);
+			}
+		} catch (e) { /* engine not up */ }
+		var connected = engine.some(function (l) { return l.text.indexOf('Connection established') !== -1; });
+		return { connected: connected, signon: connected ? 4 : 0, signons: 4 };
+	}
+
+	function currentPhase() {
+		var settings = vis('settingsPanel');
+		var loading = vis('loadingOverlay');
+		var browser = vis('serverBrowser', 'show');
+		var mapDl = document.getElementById('mapDownloadOverlay');
+		var mapLoading = !!(mapDl && mapDl.style.display === 'block');
+		var playBtn = document.getElementById('playBtn');
+		var playIdle = !!(settings && playBtn && !playBtn.disabled);
+		var st = connectionSnapshot();
+		var connected = !!st.connected;
+		var signedOn = connected && (st.signon >= (st.signons || 4) || st.signon >= 4);
+		if (playIdle) return 'settings';
+		if (mapLoading) return 'loading-map';
+		if (connected && signedOn) return 'match';
+		if (connected) return 'connecting';
+		if (loading && !browser) return 'loading';
+		if (browser) return 'browser';
+		if (loading) return 'loading';
+		if (settings) return 'settings';
+		return 'unknown';
+	}
+
 	function readHtmlOverlayState() {
-		function vis(id, showClass) {
-			var el = document.getElementById(id);
-			if (!el) return false;
-			if (el.classList.contains('hidden')) return false;
-			if (showClass && !el.classList.contains(showClass)) return false;
-			if (el.style && el.style.display === 'none') return false;
-			return true;
-		}
 		var toolbar = document.getElementById('toolbar');
+		var mapDl = document.getElementById('mapDownloadOverlay');
+		var loadStatus = document.getElementById('loadingStatus');
+		var browserStatus = document.getElementById('serverBrowserStatus');
+		var mapDlStatus = document.getElementById('mapDlStatus');
+		var rows = document.querySelectorAll('#serverListBody tr');
 		return {
 			settingsPanel: vis('settingsPanel'),
 			loadingOverlay: vis('loadingOverlay'),
+			loadingStatus: loadStatus ? (loadStatus.textContent || '') : '',
 			toolbar: !!(toolbar && toolbar.style.display === 'flex'),
 			connectDialog: vis('connectDialog', 'show'),
 			serverBrowser: vis('serverBrowser', 'show'),
+			serverCount: rows.length,
+			serverBrowserStatus: browserStatus ? (browserStatus.textContent || '') : '',
+			mapDownload: !!(mapDl && mapDl.style.display === 'block'),
+			mapDownloadStatus: mapDlStatus ? (mapDlStatus.textContent || '') : '',
 			htmlConsole: vis('console', 'show'),
 			playDisabled: !!(document.getElementById('playBtn') && document.getElementById('playBtn').disabled),
 			joinOverlay: 'unknown',
+			phase: currentPhase(),
 		};
 	}
 
@@ -421,23 +466,77 @@
 		ui: readHtmlOverlayState,
 		net: netInfo,
 		gl: glInfo,
+		phase: currentPhase,
+		play: function (opts) {
+			opts = opts || {};
+			if (opts.name)
+				document.getElementById('playerName').value = opts.name;
+			if (opts.proxy) {
+				var p1 = document.getElementById('wsProxyUrl');
+				var p2 = document.getElementById('wsProxyUrlConnect');
+				if (p1) p1.value = opts.proxy;
+				if (p2) p2.value = opts.proxy;
+			}
+			var btn = document.getElementById('playBtn');
+			if (!btn) throw new Error('Play button missing');
+			if (btn.disabled) throw new Error('Play already clicked');
+			btn.click();
+			return { play: true, name: document.getElementById('playerName').value };
+		},
+		servers: function () {
+			var fromUi = [];
+			if (window.xonUi && typeof window.xonUi.getServers === 'function')
+				fromUi = window.xonUi.getServers();
+			var rows = [];
+			document.querySelectorAll('#serverListBody tr').forEach(function (tr) {
+				var tds = tr.querySelectorAll('td');
+				rows.push({
+					address: tr.dataset.address || '',
+					map: tr.dataset.map || '',
+					hostname: tds[0] ? tds[0].textContent : '',
+					players: tds[2] ? tds[2].textContent : '',
+					ping: tds[3] ? tds[3].textContent : '',
+				});
+			});
+			return {
+				phase: currentPhase(),
+				status: (document.getElementById('serverBrowserStatus') || {}).textContent || '',
+				servers: fromUi.length ? fromUi : rows,
+				rows: rows,
+			};
+		},
+		pick: function (query, mapName) {
+			query = String(query || '').trim();
+			if (!query) throw new Error('pick requires an address, hostname, or map');
+			var q = query.toLowerCase();
+			var rows = document.querySelectorAll('#serverListBody tr');
+			for (var i = 0; i < rows.length; i++) {
+				var tr = rows[i];
+				var blob = ((tr.dataset.address || '') + ' ' + (tr.dataset.map || '') + ' ' + (tr.textContent || '')).toLowerCase();
+				if (blob.indexOf(q) !== -1) {
+					tr.click();
+					return { via: 'row', address: tr.dataset.address, map: tr.dataset.map };
+				}
+			}
+			if (window.xonUi && typeof window.xonUi.connectToServer === 'function') {
+				var proxy = (document.getElementById('wsProxyUrl') || {}).value || 'ws://127.0.0.1:8081';
+				var map = mapName || 'unknown';
+				window.xonUi.connectToServer(query, map, proxy);
+				return { via: 'connectToServer', address: query, map: map };
+			}
+			throw new Error('no server matching "' + query + '" and connectToServer is not exposed');
+		},
+		refreshServers: function () {
+			if (window.xonUi && typeof window.xonUi.refreshServerList === 'function') {
+				window.xonUi.refreshServerList();
+				return { refresh: true };
+			}
+			var btn = document.getElementById('refreshServersBtn');
+			if (btn) { btn.click(); return { refresh: true, via: 'button' }; }
+			throw new Error('cannot refresh server list');
+		},
 	};
 
 	hookPrint();
 	hookJsConsole();
-
-	function clickPlay() {
-		var btn = document.getElementById('playBtn');
-		if (!btn) {
-			setTimeout(clickPlay, 50);
-			return;
-		}
-		if (btn.disabled) return;
-		btn.click();
-	}
-
-	if (document.readyState === 'loading')
-		document.addEventListener('DOMContentLoaded', clickPlay);
-	else
-		clickPlay();
 })();

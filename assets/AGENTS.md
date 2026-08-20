@@ -38,9 +38,9 @@ Xoylent today: BSP is `xonotic-data.pk3dir/xoylent-<hash>-<hash>.pk3`; extras ar
 
 Compiled `xonotic/darkplaces/wasm/pre.js` (not `web/pre.js`):
 
-1. `GET /filelist` (every file under this directory)
+1. `GET /filelist` (every file under this directory — **not** `xonotic/data/`)
 2. Download all of them into MEMFS `/game/<path>` (skip if IDBFS cache version matches `Module.assetVersion`, currently `v2-full`)
-3. There is **no** on-demand FS hook. If it is not in `/filelist` (or later `downloadPack`), the engine cannot open it
+3. There is **no** on-demand FS hook during a frame. Map textures that are not in `/filelist` are fetched **on connect** by `web/map-assets.js` from `/game/` (this tree, then `xonotic/data/`) and cached in IDBFS. The checkerboard notexture is only used if that fetch 404s.
 
 Failed HTTP fetches are marked downloaded and never retried until you bump `assetVersion` or clear IndexedDB.
 
@@ -83,16 +83,24 @@ cp -f xonotic/data/<map>-*.pk3 assets/game/xonotic-maps.pk3dir/
 # plus any map-only textures if they are not already synced
 ```
 
+That is **client-only**. `test/harness/stack` dedicated uses `-basedir xonotic`, so a pack that exists only here will load in the browser (`pick --map mint` logs `Map pk3 already in /game/xonotic-maps.pk3dir: mint.pk3`) and fail on the dedicated (`SpawnServer` never that map). Copy the other way for local 2p:
+
+```bash
+cp -f assets/game/xonotic-maps.pk3dir/mint.pk3 xonotic/data/mint.pk3
+test/harness/stack start --map mint
+```
+
 Native `sv_curl` map download does **not** work in WASM (libcurl is `dlopen`, no libcurl in the browser). Options:
 
-1. Pre-seed the pk3 here so `/filelist` includes it
-2. Call `Module.downloadPack(url, filename)` then `em_exec fs_rescan` (HTML does not do this yet)
+1. Pre-seed the pk3 here so `/filelist` includes it (`connectToServer` then skips `/mapdl/` when a `.pk3` **filename** contains the map name)
+2. Call `Module.downloadPack(url, filename)` then `em_exec fs_rescan` (HTML `connectToServer` does this via `/mapdl/` when the pack is not already in MEMFS)
+3. Official texture *sets* (trak6x, phillipk2x, skies, …) live in `xonotic/data/xonotic-maps.pk3dir/` and are **not** copied here. The web server serves them as `/game/` fallback; `map-assets.js` pulls only the files the BSP’s shaders name, then caches them. Do not rsync the whole 2.7 GB `textures/` tree into this directory just to avoid the checkerboard.
 
 ### Extra untracked pk3s currently in this tree
 
 `xonotic-maps.pk3dir/{4d_nex_driving_stunts_nolaser,The_DeaTHtemple,cts_wheresmucki,mint,pcp-nona,r7-prodigy,zastavka_eac1}.pk3` plus a leftover `assets/game/csprogs-xonotic-v0.8.6-*.pk3` at basedir root.
 
-`/filelist` will ship **all** of them to every browser. Do not commit them. Treat `assets/game/` as a local cache, not source of truth. Extra maps belong in gitignore / object storage.
+`/filelist` will ship **all** of them to every browser (and to IDBFS). Do not commit them. Treat `assets/game/` as a local cache, not source of truth. Extra maps belong in gitignore / object storage. Filename vs BSP name can differ (`cts_wheresmucki.pk3` contains `maps/wheresmucki.bsp`); `pick --map` must be the BSP / dedicated map name, not the zip stem, unless they match (`mint`).
 
 Also unused: `xonotic-music.pk3dir` is not synced (BGM silent unless you add `cdtracks.cfg` + oggs).
 

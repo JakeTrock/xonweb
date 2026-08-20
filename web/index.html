@@ -552,6 +552,7 @@
 		<div id="console"></div>
 	</div>
 
+	<script src="map-assets.js"></script>
 	<script>
 		// --- Xonotic color palette (0-15) ---
 		var XON_COLORS = [
@@ -976,17 +977,13 @@
 
 		function connectToServer(addr, mapName, proxyUrl) {
 			console.log('Connecting to: ' + addr + ' (map: ' + mapName + ') via ' + proxyUrl);
+			mapName = mapName || 'unknown';
+			mapDlTitle.textContent = 'Preparing map: ' + mapName;
+			mapDlStatus.textContent = 'Checking map package...';
+			mapDlProgress.style.width = '0%';
+			mapDlOverlay.style.display = 'block';
 
-			// Try to download the map first, then connect
-			downloadMapPk3(mapName).then(function() {
-				try {
-					Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
-					Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
-				} catch(e) {
-					console.error('Connect failed:', e);
-				}
-			}).catch(function(err) {
-				console.error('Map download failed, connecting anyway:', err);
+			function doConnect() {
 				mapDlOverlay.style.display = 'none';
 				try {
 					Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
@@ -994,6 +991,36 @@
 				} catch(e) {
 					console.error('Connect failed:', e);
 				}
+			}
+
+			function rescanFs() {
+				try {
+					Module.ccall('em_exec', null, ['string'], ['fs_rescan']);
+					console.log('fs_rescan after map/texture prefetch');
+				} catch(e) {
+					console.warn('fs_rescan failed:', e);
+				}
+			}
+
+			downloadMapPk3(mapName).catch(function(err) {
+				console.error('Map download failed, continuing with texture prefetch:', err);
+			}).then(function() {
+				if (!window.xonMapAssets || typeof window.xonMapAssets.prefetch !== 'function') {
+					console.warn('map-assets.js not loaded; connecting without texture prefetch');
+					return;
+				}
+				return window.xonMapAssets.prefetch(mapName, function(info) {
+					mapDlTitle.textContent = 'Loading textures: ' + mapName;
+					mapDlStatus.textContent = info.status || 'Downloading textures...';
+					mapDlProgress.style.width = (info.percent || 0) + '%';
+				});
+			}).then(function() {
+				rescanFs();
+				doConnect();
+			}).catch(function(err) {
+				console.error('Texture prefetch failed, connecting anyway:', err);
+				rescanFs();
+				doConnect();
 			});
 		}
 
@@ -1055,15 +1082,11 @@
 
 				return Module.downloadPack(url, filename).then(function() {
 					mapDlStatus.textContent = 'Installing map package...';
-					mapDlProgress.style.width = '100%';
-					// Rescan filesystem so engine finds the new pack
+					mapDlProgress.style.width = '50%';
 					try {
 							Module.ccall('em_exec', null, ['string'], ['fs_rescan']);
 							console.log('fs_rescan called after downloading ' + filename);
 						} catch(e) { console.warn('fs_rescan failed:', e); }
-					setTimeout(function() {
-						mapDlOverlay.style.display = 'none';
-					}, 500);
 				}).catch(function(err) {
 					console.log('Candidate ' + filename + ' failed: ' + err.message);
 					return tryNextCandidate(idx + 1);
@@ -1072,6 +1095,13 @@
 
 			return tryNextCandidate(0);
 		}
+
+		window.xonUi = {
+			connectToServer: connectToServer,
+			showServerBrowser: showServerBrowser,
+			refreshServerList: refreshServerList,
+			getServers: function () { return allServers.slice(); },
+		};
 
 		// --- Console toggle ---
 		document.getElementById('consoleBtn').addEventListener('click', function() {

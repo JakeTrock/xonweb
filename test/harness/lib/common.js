@@ -163,7 +163,15 @@ function parseArgs(argv) {
 		else if (a.startsWith('--id=')) flags.id = a.slice(5);
 		else if (a === '--cdp') flags.cdp = parseInt(next(), 10);
 		else if (a.startsWith('--cdp=')) flags.cdp = parseInt(a.slice(6), 10);
+		else if (a === '--port') flags.port = parseInt(next(), 10);
+		else if (a.startsWith('--port=')) flags.port = parseInt(a.slice(7), 10);
+		else if (a === '--view-port') flags.viewPort = parseInt(next(), 10);
+		else if (a.startsWith('--view-port=')) flags.viewPort = parseInt(a.slice(12), 10);
 		else if (a === '--headed') flags.headed = true;
+		else if (a === '--play') flags.play = true;
+		else if (a === '--local') flags.local = true;
+		else if (a === '--name') flags.name = next();
+		else if (a.startsWith('--name=')) flags.name = a.slice(7);
 		else if (a === '--timeout') flags.timeout = parseFloat(next());
 		else if (a.startsWith('--timeout=')) flags.timeout = parseFloat(a.slice(10));
 		else if (a === '--stream') flags.stream = next();
