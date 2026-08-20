@@ -113,7 +113,7 @@
 			border-radius: 4px;
 			border: 1px solid #444;
 		}
-		#playBtn {
+		#playBtn, #closeSettingsBtn {
 			display: block;
 			width: 100%;
 			padding: 12px;
@@ -130,6 +130,12 @@
 		}
 		#playBtn:hover { opacity: 0.9; }
 		#playBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+		#closeSettingsBtn {
+			display: none;
+			background: #333;
+			letter-spacing: 1px;
+		}
+		#closeSettingsBtn:hover { background: #555; }
 
 		/* --- Loading Overlay --- */
 		#loadingOverlay {
@@ -180,7 +186,7 @@
 			border: 2px solid #ff6600;
 			border-radius: 8px;
 			padding: 25px;
-			z-index: 210;
+			z-index: 220;
 			display: none;
 			min-width: 420px;
 		}
@@ -249,6 +255,8 @@
 			display: flex;
 			justify-content: space-between;
 			align-items: center;
+			flex-wrap: wrap;
+			gap: 8px;
 		}
 		#serverBrowser h2 .actions { display: flex; gap: 8px; }
 		#serverBrowser h2 button {
@@ -336,28 +344,91 @@
 		#console div { color: #ccc; line-height: 1.4; }
 		#console div.error { color: #ff4444; }
 
-		/* --- Toolbar --- */
+		/* --- Toolbar (gear only) --- */
 		#toolbar {
 			position: absolute;
 			top: 10px; right: 10px;
-			z-index: 200;
+			z-index: 207;
 			display: flex;
 			gap: 8px;
 			pointer-events: auto;
 		}
-		#toolbar button {
-			padding: 8px 16px;
+		#gearBtn {
+			width: 40px;
+			height: 40px;
+			padding: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
 			background: rgba(255, 102, 0, 0.85);
 			border: 1px solid #ff9900;
 			color: #fff;
-			font-size: 13px;
+			border-radius: 6px;
+			cursor: pointer;
+			pointer-events: auto;
+			box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+		}
+		#gearBtn:hover { background: rgba(255, 153, 0, 1); color: #fff; }
+		#gearBtn svg { width: 22px; height: 22px; display: block; }
+
+		/* --- Gear / ESC menu --- */
+		#gameMenuBackdrop {
+			position: absolute;
+			top: 0; left: 0; right: 0; bottom: 0;
+			background: rgba(0, 0, 0, 0.45);
+			z-index: 205;
+			display: none;
+		}
+		#gameMenuBackdrop.show { display: block; }
+		#gameMenu {
+			position: absolute;
+			top: 50%; left: 50%;
+			transform: translate(-50%, -50%);
+			background: #1a1a2e;
+			border: 2px solid #ff6600;
+			border-radius: 8px;
+			padding: 22px 24px;
+			z-index: 206;
+			display: none;
+			min-width: 280px;
+			flex-direction: column;
+			gap: 8px;
+			box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+		}
+		#gameMenu.show { display: flex; }
+		#gameMenu h2 {
+			color: #ff6600;
+			font-size: 18px;
+			margin-bottom: 6px;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+		}
+		#gameMenu h2 .close-x {
+			background: #333;
+			border: none;
+			color: #ccc;
+			width: 28px;
+			height: 28px;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 16px;
+			line-height: 1;
+			padding: 0;
+		}
+		#gameMenu h2 .close-x:hover { background: #555; color: #fff; }
+		#gameMenu button.menu-item {
+			padding: 10px 16px;
+			background: #ff6600;
+			border: none;
+			color: #fff;
+			font-size: 14px;
 			font-weight: bold;
 			border-radius: 4px;
 			cursor: pointer;
-			pointer-events: auto;
-			text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+			text-align: left;
 		}
-		#toolbar button:hover { background: rgba(255, 153, 0, 1); color: #fff; }
+		#gameMenu button.menu-item:hover { background: #ff9900; }
 
 		/* Xonotic color palette (0-15) */
 		.xon-colors {
@@ -471,6 +542,7 @@
 				</div>
 
 				<button id="playBtn">Play</button>
+				<button id="closeSettingsBtn">Close</button>
 			</div>
 		</div>
 
@@ -485,7 +557,7 @@
 
 		<!-- Connect Dialog -->
 		<div id="connectDialog">
-			<h2>Connect to Server</h2>
+			<h2>Direct Connect</h2>
 			<label>Server Address (host:port)</label>
 			<input type="text" id="serverAddress" value="localhost:26000" placeholder="host:port">
 			<label>Connection Mode</label>
@@ -501,12 +573,24 @@
 			</div>
 		</div>
 
-		<!-- Toolbar -->
+		<!-- Toolbar: gear opens the same menu as Esc -->
 		<div id="toolbar" style="display:none;">
-			<button id="browseBtn" title="Browse online servers">Browse</button>
-			<button id="connectMenuBtn" title="Connect to server">Connect</button>
-			<button id="settingsBtn" title="Settings">Settings</button>
-			<button id="consoleBtn" title="Toggle console">Console</button>
+			<button id="gearBtn" title="Menu" aria-label="Menu">
+				<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+					<path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54A.49.49 0 0 0 13.9 2h-3.8a.49.49 0 0 0-.48.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.73 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.6.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.25.42.48.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.12-.56 1.62-.94l2.39.96c.25.1.54 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/>
+				</svg>
+			</button>
+		</div>
+
+		<div id="gameMenuBackdrop"></div>
+		<div id="gameMenu">
+			<h2>
+				<span>Menu</span>
+				<button type="button" class="close-x" id="closeGameMenuBtn" title="Close" aria-label="Close">&times;</button>
+			</h2>
+			<button class="menu-item" id="browseBtn" title="Browse online servers">Browse</button>
+			<button class="menu-item" id="settingsBtn" title="Settings">Settings</button>
+			<button class="menu-item" id="consoleBtn" title="Toggle console">Console</button>
 		</div>
 
 		<!-- Server Browser -->
@@ -514,6 +598,7 @@
 			<h2>
 				<span>Server Browser</span>
 				<div class="actions">
+					<button id="connectMenuBtn" title="Connect to a host:port">Direct Connect</button>
 					<button id="refreshServersBtn">Refresh</button>
 					<button class="cancel" id="closeBrowserBtn">Close</button>
 				</div>
@@ -668,9 +753,10 @@
 				if (el1) el1.value = proxyUrl;
 				if (el2) el2.value = proxyUrl;
 			})();
-			// Close the built-in C menu (forceqmenu 1 opens it at startup but we use HTML UI)
+			// Close the built-in C menu and steal Esc from it (HTML gear menu handles Esc)
 			setTimeout(function() {
 				try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch(e) { console.log('togglemenu 0 failed:', e.message); }
+				try { Module.ccall('em_exec', null, ['string'], ['unbind ESCAPE']); } catch(e) { console.log('unbind ESCAPE failed:', e.message); }
 			}, 500);
 			// Auto-open the HTML server browser after a short delay
 			setTimeout(function() {
@@ -766,7 +852,8 @@
 				'fov ' + fov + '\n' +
 				'vid_pixelheight ' + resScale + '\n' +
 				qualitySettings[quality] + '\n' +
-				'net_slist_favorites "' + favorites + '"\n';
+				'net_slist_favorites "' + favorites + '"\n' +
+				'unbind ESCAPE\n';
 			
 			return cfg;
 		}
@@ -789,19 +876,111 @@
 			document.body.appendChild(script);
 		});
 
+		// --- Gear / Esc menu ---
+		var gameMenu = document.getElementById('gameMenu');
+		var gameMenuBackdrop = document.getElementById('gameMenuBackdrop');
+
+		function hideGameMenu() {
+			gameMenu.classList.remove('show');
+			gameMenuBackdrop.classList.remove('show');
+		}
+		function showGameMenu() {
+			hideConnectDialog();
+			var browserEl = document.getElementById('serverBrowser');
+			if (browserEl) browserEl.classList.remove('show');
+			gameMenu.classList.add('show');
+			gameMenuBackdrop.classList.add('show');
+			try { if (document.exitPointerLock) document.exitPointerLock(); } catch (e) {}
+			try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch (e) {}
+		}
+		function toggleGameMenu() {
+			if (gameMenu.classList.contains('show')) hideGameMenu();
+			else showGameMenu();
+		}
+		function hideConnectDialog() {
+			document.getElementById('connectDialog').classList.remove('show');
+		}
+		function showConnectDialog() {
+			document.getElementById('connectDialog').classList.add('show');
+		}
+		function closeSettingsPanel() {
+			document.getElementById('settingsPanel').classList.add('hidden');
+			if (engineStarted) document.getElementById('toolbar').style.display = 'flex';
+		}
+		function openSettingsPanel() {
+			hideGameMenu();
+			document.getElementById('playBtn').style.display = 'none';
+			document.getElementById('closeSettingsBtn').style.display = 'block';
+			if (engineStarted) document.getElementById('toolbar').style.display = 'none';
+			document.getElementById('settingsPanel').classList.remove('hidden');
+		}
+		function swallowEscape(e) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+		}
+		function handleEscape(e) {
+			if (!engineStarted) return;
+			swallowEscape(e);
+			if (e.repeat) return;
+			try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch (err) {}
+
+			var connectDialog = document.getElementById('connectDialog');
+			if (connectDialog.classList.contains('show')) {
+				hideConnectDialog();
+				return;
+			}
+			if (!document.getElementById('settingsPanel').classList.contains('hidden')) {
+				closeSettingsPanel();
+				return;
+			}
+			var browserEl = document.getElementById('serverBrowser');
+			if (browserEl && browserEl.classList.contains('show')) {
+				browserEl.classList.remove('show');
+				return;
+			}
+			var mapDl = document.getElementById('mapDownloadOverlay');
+			if (mapDl && mapDl.style.display === 'block') return;
+
+			toggleGameMenu();
+		}
+		['keydown', 'keyup', 'keypress'].forEach(function(evtType) {
+			window.addEventListener(evtType, function(e) {
+				if (e.key === 'Escape' || e.code === 'Escape') {
+					if (evtType === 'keydown') handleEscape(e);
+					else if (engineStarted) swallowEscape(e);
+					return;
+				}
+				if (!engineStarted) return;
+				var tag = (e.target && e.target.tagName) || '';
+				if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+				var block = gameMenu.classList.contains('show') ||
+					document.getElementById('connectDialog').classList.contains('show') ||
+					!document.getElementById('settingsPanel').classList.contains('hidden');
+				if (!block) return;
+				e.preventDefault();
+				e.stopImmediatePropagation();
+			}, true);
+		});
+		document.getElementById('gearBtn').addEventListener('click', function(e) {
+			e.stopPropagation();
+			toggleGameMenu();
+		});
+		document.getElementById('closeGameMenuBtn').addEventListener('click', hideGameMenu);
+		gameMenuBackdrop.addEventListener('click', hideGameMenu);
+
 		// --- Connect dialog ---
 		document.getElementById('connectMenuBtn').addEventListener('click', function() {
-			document.getElementById('connectDialog').classList.add('show');
+			showConnectDialog();
 		});
 		document.getElementById('cancelConnectBtn').addEventListener('click', function() {
-			document.getElementById('connectDialog').classList.remove('show');
+			hideConnectDialog();
 		});
 		document.getElementById('connectBtn').addEventListener('click', function() {
 			var addr = document.getElementById('serverAddress').value;
 			var mode = document.getElementById('connectMode').value;
 			var proxyUrl = document.getElementById('wsProxyUrlConnect').value;
 			
-			document.getElementById('connectDialog').classList.remove('show');
+			hideConnectDialog();
 			
 			if (mode === 'tcp') {
 				proxyUrl += (proxyUrl.indexOf('?') !== -1 ? '&proto=tcp' : '?proto=tcp');
@@ -812,10 +991,9 @@
 			connectToServer(addr, 'unknown', proxyUrl);
 		});
 
-		// --- Settings button (re-open settings panel) ---
-		document.getElementById('settingsBtn').addEventListener('click', function() {
-			document.getElementById('settingsPanel').classList.remove('hidden');
-		});
+		// --- Settings (re-open panel from the gear menu) ---
+		document.getElementById('settingsBtn').addEventListener('click', openSettingsPanel);
+		document.getElementById('closeSettingsBtn').addEventListener('click', closeSettingsPanel);
 
 		// --- Server Browser ---
 		var serverBrowser = document.getElementById('serverBrowser');
@@ -829,6 +1007,8 @@
 		}
 
 		function showServerBrowser() {
+			hideGameMenu();
+			hideConnectDialog();
 			serverBrowser.classList.add('show');
 			if (serverListBody.children.length === 0) {
 				refreshServerList();
@@ -1095,6 +1275,9 @@
 		}
 
 		function connectToServer(addr, mapName, proxyUrl) {
+			hideGameMenu();
+			hideConnectDialog();
+			serverBrowser.classList.remove('show');
 			var seq = ++connectSeq;
 			console.log('Connecting to: ' + addr + ' (map: ' + mapName + ') via ' + proxyUrl);
 			mapName = mapName || 'unknown';
@@ -1248,10 +1431,14 @@
 			showServerBrowser: showServerBrowser,
 			refreshServerList: refreshServerList,
 			getServers: function () { return allServers.slice(); },
+			showGameMenu: showGameMenu,
+			hideGameMenu: hideGameMenu,
+			toggleGameMenu: toggleGameMenu,
 		};
 
 		// --- Console toggle ---
 		document.getElementById('consoleBtn').addEventListener('click', function() {
+			hideGameMenu();
 			document.getElementById('console').classList.toggle('show');
 		});
 		document.addEventListener('keydown', function(e) {

@@ -8,7 +8,7 @@ Parent: [../AGENTS.md](../AGENTS.md). Engine preload lives in [../xonotic/darkpl
 
 | File | Role |
 |---|---|
-| `index.html` | Settings panel, canvas, loading overlay, HTML console, Connect dialog, server browser, `Module` setup |
+| `index.html` | Settings panel, canvas, loading overlay, HTML console, Direct Connect dialog, server browser, gear/Esc menu, `Module` setup |
 | `map-assets.js` | On connect: parse BSP texture + entity lumps, fetch shaders, images/env, and sounds into MEMFS, persist IDBFS |
 | `server.js` | Static server on **9080**. No CLI flags, no env vars |
 | `asset-cache.js` | Disk cache for `/mapdl/` and `/curlproxy` GET bodies (`.cache/assets/`, 3-day TTL) |
@@ -62,7 +62,7 @@ MIME: `.pk3` is `application/zip`. Unknown extensions are `application/octet-str
    - `GET /filelist`, download (or skip cached) files into `/game/<path>`
    - write `/game/xonotic-data.pk3dir/autoexec.cfg` (`forceqmenu 1`, vid size, then the settings block)
    - `Module.callMain(['-basedir','/game','-game','xonotic-data.pk3dir','-game','xonotic-maps.pk3dir'])`
-6. HTML `print`/`printErr` watch for `menu: program loaded` / `menu: program is not loaded`, then `showClickToPlay()`: hide overlay, show toolbar, `em_wss <proxy> binary`, `togglemenu 0`, open the HTML **server browser**. `onEngineReady` (right after `callMain`) also calls `showClickToPlay` because `forceqmenu 1` skips menu QC. Do not wait 30s.
+6. HTML `print`/`printErr` watch for `menu: program loaded` / `menu: program is not loaded`, then `showClickToPlay()`: hide overlay, show the gear (`#toolbar` / `#gearBtn`), `em_wss <proxy> binary`, `togglemenu 0`, `unbind ESCAPE`, open the HTML **server browser**. `onEngineReady` (right after `callMain`) also calls `showClickToPlay` because `forceqmenu 1` skips menu QC. Do not wait 30s. Esc (and the gear) open `#gameMenu` (Browse / Settings / Console) instead of the engine menu. Direct Connect is a header button on the server browser.
 7. Player picks a server row → `connectToServer(addr, map, proxy)`: **`disconnect` first** if already in a match, then skip download if a MEMFS `.pk3` **filename** contains the map name; otherwise `#mapDownloadOverlay` via `/mapdl/` + `downloadPack`. Then `map-assets.js` prefetches that BSP’s shaders + referenced textures **and entity-lump sounds** from `/game/` (assets, then `xonotic/data`) into MEMFS, Cache Storage (`xon-postboot-v1`), and IDBFS, `fs_rescan`, then `em_wss` + `connect`. The checkerboard notexture is only used if a file 404s. A second pick while in-match leaves the old dedicated immediately; a later pick cancels an in-flight download. After connect, the dedicated may `stuffcmd` `curl --pak …`; WASM curl GETs `/curlproxy?url=` and writes `dlcache/`.
 8. In-match QC Join/Spectate may still appear. `em_exec('join')` is necessary but often **not** sufficient — the HUD says Press SPACE; SDL needs a real key on `#canvas`. Close `#serverBrowser` (`#closeBrowserBtn`); `phase() === 'match'` can still have the browser overlay up.
 
@@ -81,11 +81,11 @@ Module.ccall('em_exec', null, ['string'], ['connect 127.0.0.1:26000']);
 
 `em_exec` is `EMSCRIPTEN_KEEPALIVE` (`sys_wasm.c`). Keep `ccall`, `callMain`, `FS`, `IDBFS` in `EXPORTED_RUNTIME_METHODS` (see DarkPlaces `makefile.inc`).
 
-Server-browser rows call `connectToServer` (`disconnect`, map download, then `em_wss` + `connect` with **no** delay). The Connect dialog uses the same path. TCP mode appends `?proto=tcp` to the proxy URL. `window.xonUi.connectToServer` is the same function the harness `pick` uses.
+Server-browser rows call `connectToServer` (`disconnect`, map download, then `em_wss` + `connect` with **no** delay). The Direct Connect dialog (`#connectMenuBtn` in the browser header) uses the same path. TCP mode appends `?proto=tcp` to the proxy URL. `window.xonUi.connectToServer` is the same function the harness `pick` uses.
 
 Server list: convert `ws://host:8081` → `http://host:8081/slist`. After Play, proxy inputs are rewritten to `ws://` + `location.hostname` + `:8081` so a non-localhost page still finds the proxy.
 
-Backtick / `#consoleBtn` toggles the HTML log overlay (`#console`). That is **not** the engine console. The harness `client con` reads `Module.print` (engine) by default; `client con --stream html` is this overlay.
+The top-right gear (`#gearBtn`) and **Esc** toggle `#gameMenu` (Browse, Settings, Console). That is **not** the engine `togglemenu`. Backtick / `#consoleBtn` (inside the gear menu) toggles the HTML log overlay (`#console`). That is **not** the engine console. The harness `client con` reads `Module.print` (engine) by default; `client con --stream html` is this overlay.
 
 ## Harness bridge (`?harness=1`)
 

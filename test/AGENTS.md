@@ -193,7 +193,7 @@ test/harness/client grab  [--id a] [--seconds 3] [--hz 10]
 ```
 
 - `--canvas` is what the engine drew. Use this for hitch / world / missing textures.
-- `--page` is what a player would see, including the Join dialog and toolbar. Use this to notice you never `join`ed.
+- `--page` is what a player would see, including the Join dialog and the gear. Use this to notice you never `join`ed.
 - `--ui` is for overlay bugs without the 3D view.
 
 `shot` writes `artifacts/<run>/<id>/<name>.png` and prints that path. Default name is a timestamp. The agent `read_file`s the PNG.
@@ -257,7 +257,7 @@ test/harness/client cvar   [--id a] <name>                # exec the cvar, captu
 test/harness/client players [--id a]                      # last status / server players if printed
 ```
 
-`ui` reports booleans: `settingsPanel`, `loadingOverlay`, `toolbar`, `connectDialog`, `serverBrowser`, `htmlConsole`, plus a guess for the Join/Spectate QC overlay (from the last `--page` shot only if you just took one — otherwise “unknown”). Use `shot --page` when `ui` is not enough.
+`ui` reports booleans: `settingsPanel`, `loadingOverlay`, `toolbar`, `gameMenu`, `connectDialog`, `serverBrowser`, `htmlConsole`, plus a guess for the Join/Spectate QC overlay (from the last `--page` shot only if you just took one — otherwise “unknown”). Use `shot --page` when `ui` is not enough.
 
 ## In-page bridge (`?harness=1`)
 

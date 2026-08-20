@@ -233,6 +233,7 @@
 			loadingOverlay: vis('loadingOverlay'),
 			loadingStatus: loadStatus ? (loadStatus.textContent || '') : '',
 			toolbar: !!(toolbar && toolbar.style.display === 'flex'),
+			gameMenu: vis('gameMenu', 'show'),
 			connectDialog: vis('connectDialog', 'show'),
 			serverBrowser: vis('serverBrowser', 'show'),
 			serverCount: rows.length,
