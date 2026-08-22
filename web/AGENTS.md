@@ -70,7 +70,7 @@ MIME: `.pk3` is `application/zip`. Unknown extensions are `application/octet-str
 
 This is the flow the agent harness drives: settings → loading → browser → map loading → match.
 
-Pointer lock is SDL relative-mouse after the user clicks the canvas. There is no extra JS lock helper.
+Pointer lock is SDL relative-mouse after the user clicks the canvas. There is no extra JS lock helper. While any HTML overlay (gear menu, connect dialog, settings, server browser, map download, console) is open, `syncMouseCapture()` in `index.html` forces `vid_mouse 0` + `exitPointerLock` — otherwise the engine stays in relative mode behind the overlay and Emscripten SDL re-grabs the lock on the next canvas mouse event. Closing all overlays restores `vid_mouse 1`.
 
 ## Talking to the engine
 

@@ -904,9 +904,45 @@
 		var gameMenu = document.getElementById('gameMenu');
 		var gameMenuBackdrop = document.getElementById('gameMenuBackdrop');
 
+		// --- Mouse capture vs HTML overlays ---
+		// While any HTML menu overlay is up the engine must not hold relative
+		// mouse (browser pointer lock). The engine alone would keep it: it stays
+		// in key_game behind these overlays, and Emscripten SDL re-grabs a lost
+		// pointer lock on the next canvas mouse event. Forcing `vid_mouse 0`
+		// makes VID_SetMouse drop relative mode entirely (and stops view turning);
+		// `vid_mouse 1` restores capture once every overlay is closed.
+		var mouseCaptureFreed = false;
+		function overlayWantsCursor() {
+			if (gameMenu.classList.contains('show')) return true;
+			if (document.getElementById('connectDialog').classList.contains('show')) return true;
+			if (!document.getElementById('settingsPanel').classList.contains('hidden')) return true;
+			if (document.getElementById('serverBrowser').classList.contains('show')) return true;
+			if (document.getElementById('mapDownloadOverlay').style.display === 'block') return true;
+			if (document.getElementById('console').classList.contains('show')) return true;
+			return false;
+		}
+		function syncMouseCapture() {
+			if (!engineStarted) return;
+			var wantsFree = overlayWantsCursor();
+			if (wantsFree === mouseCaptureFreed) {
+				if (wantsFree) { try { if (document.exitPointerLock) document.exitPointerLock(); } catch (e) {} }
+				return;
+			}
+			try {
+				if (wantsFree) {
+					if (document.exitPointerLock) document.exitPointerLock();
+					Module.ccall('em_exec', null, ['string'], ['vid_mouse 0']);
+				} else {
+					Module.ccall('em_exec', null, ['string'], ['vid_mouse 1']);
+				}
+				mouseCaptureFreed = wantsFree;
+			} catch (e) {}
+		}
+
 		function hideGameMenu() {
 			gameMenu.classList.remove('show');
 			gameMenuBackdrop.classList.remove('show');
+			syncMouseCapture();
 		}
 		function showGameMenu() {
 			hideConnectDialog();
@@ -914,8 +950,8 @@
 			if (browserEl) browserEl.classList.remove('show');
 			gameMenu.classList.add('show');
 			gameMenuBackdrop.classList.add('show');
-			try { if (document.exitPointerLock) document.exitPointerLock(); } catch (e) {}
 			try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch (e) {}
+			syncMouseCapture();
 		}
 		function toggleGameMenu() {
 			if (gameMenu.classList.contains('show')) hideGameMenu();
@@ -923,13 +959,16 @@
 		}
 		function hideConnectDialog() {
 			document.getElementById('connectDialog').classList.remove('show');
+			syncMouseCapture();
 		}
 		function showConnectDialog() {
 			document.getElementById('connectDialog').classList.add('show');
+			syncMouseCapture();
 		}
 		function closeSettingsPanel() {
 			document.getElementById('settingsPanel').classList.add('hidden');
 			if (engineStarted) document.getElementById('toolbar').style.display = 'flex';
+			syncMouseCapture();
 		}
 		function openSettingsPanel() {
 			hideGameMenu();
@@ -937,6 +976,7 @@
 			document.getElementById('closeSettingsBtn').style.display = 'block';
 			if (engineStarted) document.getElementById('toolbar').style.display = 'none';
 			document.getElementById('settingsPanel').classList.remove('hidden');
+			syncMouseCapture();
 		}
 		function swallowEscape(e) {
 			e.preventDefault();
@@ -960,6 +1000,7 @@
 			var browserEl = document.getElementById('serverBrowser');
 			if (browserEl && browserEl.classList.contains('show')) {
 				browserEl.classList.remove('show');
+				syncMouseCapture();
 				return;
 			}
 			var mapDl = document.getElementById('mapDownloadOverlay');
@@ -1034,6 +1075,7 @@
 			hideGameMenu();
 			hideConnectDialog();
 			serverBrowser.classList.add('show');
+			syncMouseCapture();
 			if (serverListBody.children.length === 0) {
 				refreshServerList();
 			}
@@ -1134,6 +1176,7 @@
 						var mapName = this.dataset.map;
 						var proxyUrl = document.getElementById('wsProxyUrl').value || 'ws://localhost:8081';
 						serverBrowser.classList.remove('show');
+						syncMouseCapture();
 						connectToServer(addr, mapName, proxyUrl);
 					});
 
@@ -1154,6 +1197,7 @@
 		document.getElementById('refreshServersBtn').addEventListener('click', refreshServerList);
 		document.getElementById('closeBrowserBtn').addEventListener('click', function() {
 			serverBrowser.classList.remove('show');
+			syncMouseCapture();
 		});
 
 		// Prevent SDL2/Emscripten keyboard capture when typing in input fields
@@ -1241,6 +1285,7 @@
 			lastConnectAddr = addr;
 			lastProxyUrl = proxyUrl;
 			mapDlOverlay.style.display = 'none';
+			syncMouseCapture();
 			try {
 				engineExec('disconnect');
 				engineExec('em_wss ' + proxyUrl + ' binary');
@@ -1336,6 +1381,7 @@
 			lastConnectAddr = addr;
 			lastProxyUrl = proxyUrl;
 			leaveCurrentMatch();
+			syncMouseCapture();
 			mapDlStatus.textContent = 'Checking current server map...';
 			liveMapName(addr, mapName, proxyUrl).then(function(live) {
 				if (seq !== connectSeq) return;
@@ -1488,11 +1534,13 @@
 		document.getElementById('consoleBtn').addEventListener('click', function() {
 			hideGameMenu();
 			document.getElementById('console').classList.toggle('show');
+			syncMouseCapture();
 		});
 		document.addEventListener('keydown', function(e) {
 			if (e.key === '`' || e.code === 'Backquote') {
 				e.preventDefault();
 				document.getElementById('console').classList.toggle('show');
+				syncMouseCapture();
 			}
 		});
 	</script>
