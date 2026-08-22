@@ -61,7 +61,8 @@
 			'}' +
 			'};' +
 			'setInterval(function(){if(!sent&&last&&Date.now()-last>4000){sent=true;' +
-			'var xhr=new XMLHttpRequest();xhr.open("POST","/englog?id=' + shipId + '",false);' +
+			// Blob workers have no base URI: the englog URL must be absolute.
+			'var xhr=new XMLHttpRequest();xhr.open("POST","' + location.origin + '/englog?id=' + shipId + '",false);' +
 			'xhr.send("[WORKDOG] main thread hung; last console lines:\\n"+lines.map(function(l){return l.t+"s "+l.text;}).join("\\n"));}' +
 			'},1000);';
 		try {
@@ -384,12 +385,127 @@
 		var proxy = '';
 		var el = document.getElementById('wsProxyUrl');
 		if (el) proxy = el.value || '';
-		return {
+		var out = {
 			proxyUrl: proxy,
 			lastWsUrl: lastWsUrl,
 			wsOpen: /WebSocket connected/i.test((engine[engine.length - 1] || {}).text || '') ||
 				engine.some(function (l) { return l.text === 'WebSocket connected'; }),
 		};
+		try {
+			var spy = netspySummary(10000);
+			if (spy && spy.active) out.spy = spy.active;
+		} catch (e) { /* spy never armed */ }
+		return out;
+	}
+
+	// --- WebSocket frame spy (?harness=1 only) ---
+	// Wraps window.WebSocket before the engine loads so every binary frame
+	// on the proxy tunnel is timestamped in the page. This is what lets the
+	// harness attribute a lag spike to one leg:
+	//   server → proxy → browser rx | browser tx → engine main thread.
+	var NETSPY_RING = 8192;
+	var NETSPY_SOCKETS = 8;
+	var RealWebSocket = window.WebSocket;
+	var netSpySockets = [];
+
+	function pushSpyEvent(rec, dir, size, bufferedAfter) {
+		rec.events.push([now(), dir, size, bufferedAfter || 0]);
+		if (rec.events.length > NETSPY_RING) rec.events.splice(0, rec.events.length - NETSPY_RING);
+	}
+
+	window.WebSocket = function (url, protocols) {
+		var ws = protocols !== undefined ? new RealWebSocket(url, protocols) : new RealWebSocket(url);
+		var rec = {
+			url: String(url),
+			t0: now(),
+			closedAt: null,
+			errors: 0,
+			sendErrors: 0,
+			maxBufferedAfter: 0,
+			events: [],
+		};
+		netSpySockets.push(rec);
+		if (netSpySockets.length > NETSPY_SOCKETS) netSpySockets.splice(0, netSpySockets.length - NETSPY_SOCKETS);
+		ws.addEventListener('message', function (ev) {
+			if (typeof ev.data === 'string') return; // text frames are not game traffic
+			pushSpyEvent(rec, 'r', ev.data ? (ev.data.byteLength || ev.data.size || 0) : 0, 0);
+		});
+		ws.addEventListener('close', function () { rec.closedAt = now(); });
+		ws.addEventListener('error', function () { rec.errors++; });
+		var origSend = ws.send.bind(ws);
+		ws.send = function (data) {
+			var size = data ? (data.byteLength || data.size || data.length || 0) : 0;
+			var r = origSend(data);
+			var buffered = ws.bufferedAmount || 0;
+			if (buffered > rec.maxBufferedAfter) rec.maxBufferedAfter = buffered;
+			pushSpyEvent(rec, 's', size, buffered);
+			return r;
+		};
+		return ws;
+	};
+	try {
+		window.WebSocket.prototype = RealWebSocket.prototype;
+		['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) {
+			window.WebSocket[k] = RealWebSocket[k];
+		});
+	} catch (e) { /* keep native constants if frozen */ }
+
+	function interarrivalStats(events, dir, windowSec) {
+		var cutoff = now() - windowSec;
+		var prevT = null;
+		var gaps = [];
+		var count = 0;
+		var bytes = 0;
+		for (var i = 0; i < events.length; i++) {
+			var ev = events[i];
+			if (ev[1] !== dir || ev[0] < cutoff) continue;
+			count++;
+			bytes += ev[2];
+			if (prevT !== null) {
+				var dt = (ev[0] - prevT) * 1000;
+				gaps.push(dt);
+			}
+			prevT = ev[0];
+		}
+		if (!gaps.length)
+			return { count: count, bytesPerSec: Math.round(bytes / Math.max(windowSec, 0.001)), maxGapMs: null, p50GapMs: null, p95GapMs: null };
+		gaps.sort(function (a, b) { return a - b; });
+		return {
+			count: count,
+			bytesPerSec: Math.round(bytes / Math.max(windowSec, 0.001)),
+			maxGapMs: Math.round(gaps[gaps.length - 1]),
+			p50GapMs: Math.round(gaps[Math.floor((gaps.length - 1) * 0.5)]),
+			p95GapMs: Math.round(gaps[Math.floor((gaps.length - 1) * 0.95)]),
+		};
+	}
+
+	function netspySummary(windowMs) {
+		var win = (windowMs || 5000) / 1000;
+		var sockets = netSpySockets.map(function (rec) {
+			return {
+				url: rec.url,
+				t0: rec.t0,
+				open: rec.closedAt === null,
+				closedAt: rec.closedAt,
+				errors: rec.errors,
+				sendErrors: rec.sendErrors,
+				maxBufferedAfter: rec.maxBufferedAfter,
+				rx: interarrivalStats(rec.events, 'r', win),
+				tx: interarrivalStats(rec.events, 's', win),
+			};
+		});
+		var active = null;
+		for (var i = sockets.length - 1; i >= 0; i--) {
+			if (sockets[i].open && (sockets[i].rx.count > 0 || sockets[i].tx.count > 0)) { active = sockets[i]; break; }
+		}
+		if (!active && sockets.length) active = sockets[sockets.length - 1];
+		return { windowMs: windowMs || 5000, sockets: sockets, active: active };
+	}
+
+	function netspyReset() {
+		// Keep the records themselves: live sockets still push into them.
+		netSpySockets.forEach(function (rec) { rec.events = []; rec.maxBufferedAfter = 0; });
+		return { reset: true };
 	}
 
 	function canvasDataUrl() {
@@ -533,6 +649,8 @@
 		},
 		ui: readHtmlOverlayState,
 		net: netInfo,
+		netspy: function (windowMs) { return netspySummary(windowMs); },
+		netspyReset: netspyReset,
 		gl: glInfo,
 		phase: currentPhase,
 		play: function (opts) {

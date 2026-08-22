@@ -15,7 +15,7 @@ Parent: [../AGENTS.md](../AGENTS.md). Engine preload lives in [../xonotic/darkpl
 | `darkplaces-wasm.js` | **Generated** single-file Emscripten blob. Do not edit |
 | `pre.js` | **Stale.** Not passed to `--pre-js`. Do not treat as live |
 | `original-pre.js` | Even older preload stub. Archive only |
-| `harness-bridge.js` | `?harness=1` only: auto-Play, `window.__xon` `{ready, exec, state, shot, con, fs, ui, net, gl}` |
+| `harness-bridge.js` | `?harness=1` only: auto-Play, `window.__xon` `{ready, exec, state, shot, con, fs, ui, net, gl}`. Also wraps `window.WebSocket` (harness pages only) to timestamp every binary frame on the proxy tunnel — `__xon.netspy(ms)` / `__xon.net().spy` feed `client spikes` lag-spike attribution |
 
 ## Run
 
@@ -83,7 +83,9 @@ Module.ccall('em_exec', null, ['string'], ['connect 127.0.0.1:26000']);
 
 Server-browser rows call `connectToServer` (`disconnect`, map download, then `em_wss` + `connect` with **no** delay). The Direct Connect dialog (`#connectMenuBtn` in the browser header) uses the same path. The L7 TCP-relay option appends `?proto=tcp` to the proxy URL (only for `tcp-relay.js`; the FakeTCP hop is still UDP mode — connect to the udp2raw client port). `window.xonUi.connectToServer` is the same function the harness `pick` uses.
 
-Server list: convert `ws://host:8081` → `http://host:8081/slist`. After Play, proxy inputs are rewritten to `ws://` + `location.hostname` + `:8081` so a non-localhost page still finds the proxy.
+Server list: convert `ws://host:8081` → `http://host:8081/slist`. While `#serverBrowser` is open the page also holds an `EventSource('/slist/stream')` (same-origin passthrough to the proxy's SSE feed) and re-renders rows whenever the pushed list differs; closing/hiding the browser or picking a server closes the stream. After Play, proxy inputs are rewritten to `ws://` + `location.hostname` + `:8081` so a non-localhost page still finds the proxy.
+
+Connect rejections: the engine prints `Connect: rejected by <addr>\n<reason>` and stops retrying. The page watches for it (`handleConnectRejection`): reason `Server is full.` shows a toast and reopens the server browser; any other reason shows a toast only.
 
 The top-right gear (`#gearBtn`) and **Esc** toggle `#gameMenu` (Browse, Settings, Console). That is **not** the engine `togglemenu`. Backtick / `#consoleBtn` (inside the gear menu) toggles the HTML log overlay (`#console`). That is **not** the engine console. The harness `client con` reads `Module.print` (engine) by default; `client con --stream html` is this overlay.
 

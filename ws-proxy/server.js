@@ -148,69 +148,151 @@ function queryServerInfo(ip, port) {
 	});
 }
 
-async function handleServerList(req, res) {
-	try {
-		// 1. Resolve all master server hostnames
-		const masterIPs = [];
-		for (const ms of MASTER_SERVERS) {
-			const ip = await resolveHost(ms.host);
-			if (ip) masterIPs.push({ ip, port: ms.port, name: ms.host });
+// A full /slist sweep takes ~13s (6 masters + ~150 getinfo). Cache the
+// result briefly so repeat loads (and tunnel clients that give up early)
+// do not re-hammer every master and server. ?refresh=1 forces a rebuild.
+const SLIST_TTL_MS = 60 * 1000;
+const slistCache = { at: 0, body: null };
+let slistInflight = null;
+
+function serveJson(res, code, obj) {
+	res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+	res.end(JSON.stringify(obj));
+}
+
+async function buildServerList() {
+	// 1. Resolve all master server hostnames
+	const masterIPs = [];
+	for (const ms of MASTER_SERVERS) {
+		const ip = await resolveHost(ms.host);
+		if (ip) masterIPs.push({ ip, port: ms.port, name: ms.host });
+	}
+
+	if (masterIPs.length === 0)
+		return { servers: [], error: 'No master servers resolved' };
+
+	// 2. Query all master servers in parallel
+	const masterResults = await Promise.all(masterIPs.map(ms => queryMasterServer(ms.ip, ms.port)));
+
+	// 3. Deduplicate server list
+	const serverMap = new Map();
+	for (const servers of masterResults) {
+		for (const s of servers) {
+			const key = s.ip + ':' + s.port;
+			if (!serverMap.has(key)) serverMap.set(key, s);
 		}
-		
-		if (masterIPs.length === 0) {
-			res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-			res.end(JSON.stringify({ servers: [], error: 'No master servers resolved' }));
+	}
+
+	// 4. Query info from each server (in parallel, but limit concurrency)
+	const serverList = Array.from(serverMap.values());
+	const BATCH_SIZE = 50;
+	const results = [];
+
+	for (let i = 0; i < serverList.length; i += BATCH_SIZE) {
+		const batch = serverList.slice(i, i + BATCH_SIZE);
+		const infos = await Promise.all(batch.map(s => queryServerInfo(s.ip, s.port)));
+		for (let j = 0; j < batch.length; j++) {
+			const info = infos[j];
+			if (info && info.hostname) {
+				results.push({
+					ip: batch[j].ip,
+					port: batch[j].port,
+					address: batch[j].ip + ':' + batch[j].port,
+					hostname: info.hostname || 'unnamed',
+					map: info.mapname || 'unknown',
+					players: parseInt(info.clients || '0', 10),
+					maxplayers: parseInt(info.sv_maxclients || '0', 10),
+					ping: info._ping || 0,
+					game: info.game || '',
+					mod: info.mod || '',
+					qcstatus: info.qcstatus || '',
+				});
+			}
+		}
+	}
+
+	// Sort by player count (descending), then by ping (ascending)
+	results.sort((a, b) => b.players - a.players || a.ping - b.ping);
+	return { servers: results, count: results.length };
+}
+
+// Server-Sent Events: push the server list to an open browser so the
+// listing stays fresh without polling. Sends the cached list immediately,
+// then every 15s (also acts as an interim keepalive). A sweep is only
+// triggered when the cache is older than SLIST_TTL_MS; a full sweep takes
+// ~13s, so masters are still hit at most about once a minute.
+const SLIST_STREAM_INTERVAL_MS = 15 * 1000;
+
+function handleServerListStream(req, res) {
+	res.writeHead(200, {
+		'Content-Type': 'text/event-stream',
+		'Cache-Control': 'no-cache, no-transform',
+		Connection: 'keepalive',
+	});
+	let timer = null;
+	let closed = false;
+	const send = () => {
+		if (closed || res.writableEnded) return;
+		const body = slistCache.body || { servers: [], count: 0 };
+		res.write('data: ' + JSON.stringify(Object.assign(
+			{ cachedMs: slistCache.at ? Date.now() - slistCache.at : -1 },
+			body,
+		)) + '\n\n');
+	};
+	const refreshIfNeeded = () => {
+		if (closed || slistInflight) return;
+		const stale = !slistCache.body || Date.now() - slistCache.at >= SLIST_TTL_MS;
+		if (!stale) return;
+		slistInflight = buildServerList()
+			.then((body) => {
+				slistCache.at = Date.now();
+				slistCache.body = body;
+				send();
+			})
+			.catch((err) => { console.warn('[slist-stream] refresh failed:', err.message); })
+			.finally(() => { slistInflight = null; });
+	};
+	req.on('close', () => {
+		closed = true;
+		if (timer) clearInterval(timer);
+	});
+	res.on('close', () => {
+		closed = true;
+		if (timer) clearInterval(timer);
+	});
+	send();
+	refreshIfNeeded();
+	timer = setInterval(() => { send(); refreshIfNeeded(); }, SLIST_STREAM_INTERVAL_MS);
+	timer.unref();
+}
+
+async function handleServerList(req, res) {
+	const parsed = url.parse(req.url, true);
+	const force = parsed.query.refresh === '1';
+	const fresh = slistCache.body && Date.now() - slistCache.at < SLIST_TTL_MS;
+	if (fresh && !force) {
+		serveJson(res, 200, Object.assign({ cachedMs: Date.now() - slistCache.at }, slistCache.body));
+		return;
+	}
+	if (!slistInflight) {
+		slistInflight = buildServerList()
+			.then((body) => {
+				slistCache.at = Date.now();
+				slistCache.body = body;
+				return body;
+			})
+			.finally(() => { slistInflight = null; });
+	}
+	try {
+		const body = await slistInflight;
+		serveJson(res, 200, body);
+	} catch (err) {
+		if (slistCache.body) {
+			// stale beats nothing when masters time out mid-refresh
+			serveJson(res, 200, Object.assign({ staleMs: Date.now() - slistCache.at }, slistCache.body));
 			return;
 		}
-		
-		// 2. Query all master servers in parallel
-		const masterResults = await Promise.all(masterIPs.map(ms => queryMasterServer(ms.ip, ms.port)));
-		
-		// 3. Deduplicate server list
-		const serverMap = new Map();
-		for (const servers of masterResults) {
-			for (const s of servers) {
-				const key = s.ip + ':' + s.port;
-				if (!serverMap.has(key)) serverMap.set(key, s);
-			}
-		}
-		
-		// 4. Query info from each server (in parallel, but limit concurrency)
-		const serverList = Array.from(serverMap.values());
-		const BATCH_SIZE = 50;
-		const results = [];
-		
-		for (let i = 0; i < serverList.length; i += BATCH_SIZE) {
-			const batch = serverList.slice(i, i + BATCH_SIZE);
-			const infos = await Promise.all(batch.map(s => queryServerInfo(s.ip, s.port)));
-			for (let j = 0; j < batch.length; j++) {
-				const info = infos[j];
-				if (info && info.hostname) {
-					results.push({
-						ip: batch[j].ip,
-						port: batch[j].port,
-						address: batch[j].ip + ':' + batch[j].port,
-						hostname: info.hostname || 'unnamed',
-						map: info.mapname || 'unknown',
-						players: parseInt(info.clients || '0', 10),
-						maxplayers: parseInt(info.sv_maxclients || '0', 10),
-						ping: info._ping || 0,
-						game: info.game || '',
-						mod: info.mod || '',
-						qcstatus: info.qcstatus || '',
-					});
-				}
-			}
-		}
-		
-		// Sort by player count (descending), then by ping (ascending)
-		results.sort((a, b) => b.players - a.players || a.ping - b.ping);
-		
-		res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-		res.end(JSON.stringify({ servers: results, count: results.length }));
-	} catch (err) {
-		res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-		res.end(JSON.stringify({ error: err.message }));
+		serveJson(res, 500, { error: err.message });
 	}
 }
 
@@ -244,6 +326,11 @@ const server = http.createServer((req, res) => {
 	
 	if (parsedUrl.pathname === '/slist') {
 		handleServerList(req, res);
+		return;
+	}
+
+	if (parsedUrl.pathname === '/slist/stream') {
+		handleServerListStream(req, res);
 		return;
 	}
 
@@ -354,20 +441,94 @@ const totals = {
 const MAX_WS_BUFFERED = 128 * 1024;
 const WS_PING_MS = 5000;
 
+// Per-connection frame history for lag-spike forensics (GET /stats).
+// One entry per datagram in each direction keeps the attribution question
+// ("was the spike on server→proxy→browser, browser→proxy→server, or a
+// drop?") answerable after the fact without attaching a debugger.
+const CONN_EVENT_RING = 8192;
+const CONN_DROP_RING = 512;
+
 function ewmaUpdate(prev, sample, alpha) {
 	if (prev == null || !isFinite(prev)) return sample;
 	return prev + alpha * (sample - prev);
 }
 
+function noteConnEvent(conn, dir) {
+	const evs = conn.events;
+	evs.push([Date.now(), dir]);
+	if (evs.length > CONN_EVENT_RING) evs.splice(0, evs.length - CONN_EVENT_RING);
+}
+
+function noteConnDrop(conn) {
+	conn.dropEvents.push(Date.now());
+	if (conn.dropEvents.length > CONN_DROP_RING) conn.dropEvents.shift();
+}
+
+// Interarrival stats for one direction inside a trailing window.
+function legGaps(events, dir, windowMs, nowMs) {
+	const times = [];
+	for (let i = events.length - 1; i >= 0; i--) {
+		const ev = events[i];
+		if (ev[1] !== dir) continue;
+		if (nowMs - ev[0] > windowMs) break;
+		times.push(ev[0]);
+	}
+	times.reverse();
+	const gaps = [];
+	for (let i = 1; i < times.length; i++) {
+		const dt = times[i] - times[i - 1];
+		if (dt >= 0 && dt < 60000) gaps.push(dt);
+	}
+	gaps.sort((a, b) => a - b);
+	const n = gaps.length;
+	const at = (q) => (n ? gaps[Math.min(n - 1, Math.floor(q * (n - 1)))] : null);
+	let over50 = 0, over100 = 0, over250 = 0, over1000 = 0;
+	for (const g of gaps) {
+		if (g > 50) over50++;
+		if (g > 100) over100++;
+		if (g > 250) over250++;
+		if (g > 1000) over1000++;
+	}
+	return {
+		windowMs,
+		packets: times.length,
+		maxGapMs: n ? gaps[n - 1] : null,
+		p50GapMs: at(0.5),
+		p95GapMs: at(0.95),
+		over50,
+		over100,
+		over250,
+		over1000,
+	};
+}
+
+function legWindow(events, dir, nowMs) {
+	return {
+		w1s: legGaps(events, dir, 1000, nowMs),
+		w5s: legGaps(events, dir, 5000, nowMs),
+		w10s: legGaps(events, dir, 10000, nowMs),
+	};
+}
+
+function dropsInLast(events, windowMs, nowMs) {
+	let n = 0;
+	for (let i = events.length - 1; i >= 0; i--) {
+		if (nowMs - events[i] > windowMs) break;
+		n++;
+	}
+	return n;
+}
+
 function collectStats() {
 	const conns = [];
+	const nowMs = Date.now();
 	for (const [id, conn] of activeConnections) {
 		conns.push({
 			id,
 			target: conn.target,
 			mode: conn.mode,
 			remoteAddress: conn.remoteAddress,
-			ageMs: Date.now() - conn.connectedAt,
+			ageMs: nowMs - conn.connectedAt,
 			wsToUdp: conn.stats.wsToUdp,
 			udpToWs: conn.stats.udpToWs,
 			wsBytes: conn.stats.wsBytes,
@@ -378,6 +539,12 @@ function collectStats() {
 			wsRttMs: conn.stats.wsRttMs,
 			udpInterarrivalMs: conn.stats.udpInterarrivalMs,
 			wsInterarrivalMs: conn.stats.wsInterarrivalMs,
+			// server → proxy → browser leg ('r' = datagrams in from the dedicated)
+			gapsServerToBrowser: legWindow(conn.events, 'r', nowMs),
+			// browser → proxy → server leg ('s' = frames in from the engine)
+			gapsBrowserToServer: legWindow(conn.events, 's', nowMs),
+			dropsLast10s: dropsInLast(conn.dropEvents, 10000, nowMs),
+			dropsLast60s: dropsInLast(conn.dropEvents, 60000, nowMs),
 		});
 	}
 	return {
@@ -428,6 +595,7 @@ function sendToBrowser(conn, payload) {
 	if (ws.bufferedAmount > MAX_WS_BUFFERED) {
 		conn.stats.wsDrops++;
 		totals.wsDrops++;
+		noteConnDrop(conn);
 		if ((conn.stats.wsDrops % 50) === 1) {
 			console.error(`[Conn ${conn.id}] dropping to browser (bufferedAmount=${ws.bufferedAmount}, drops=${conn.stats.wsDrops})`);
 		}
@@ -439,6 +607,7 @@ function sendToBrowser(conn, payload) {
 	} catch (err) {
 		conn.stats.wsDrops++;
 		totals.wsDrops++;
+		noteConnDrop(conn);
 		return false;
 	}
 }
@@ -453,6 +622,18 @@ function noteInterarrival(conn, now, which) {
 			conn.stats[ewmaKey] = ewmaUpdate(conn.stats[ewmaKey], dt, 0.2);
 	}
 	conn.stats[prevKey] = now;
+}
+
+// Log server→browser stalls once per 5s so `stack logs --svc proxy` shows
+// the spikes without flooding (a remote dedicated can burst then pause).
+function logBigGap(conn, now, dir) {
+	if (dir !== 'r') return;
+	const last = conn.stats.lastUdpAt;
+	if (!last || now <= last) return;
+	const dt = now - last;
+	if (dt <= 250 || now - conn.lastGapLogAt < 5000) return;
+	conn.lastGapLogAt = now;
+	console.log(`[Conn ${conn.id}] server→browser gap ${dt}ms after ${conn.stats.udpToWs} packets (target ${conn.target})`);
 }
 
 wss.on('connection', (ws, req) => {
@@ -497,6 +678,9 @@ wss.on('connection', (ws, req) => {
 		connectedAt: Date.now(),
 		udpDest: { host: targetHost, port: targetPort },
 		pingTimer: null,
+		events: [],
+		dropEvents: [],
+		lastGapLogAt: 0,
 		stats: {
 			wsToUdp: 0,
 			udpToWs: 0,
@@ -545,6 +729,8 @@ wss.on('connection', (ws, req) => {
 
 		transport.on('data', createTcpFrameParser((payload) => {
 			const now = Date.now();
+			noteConnEvent(conn, 'r');
+			logBigGap(conn, now, 'r');
 			noteInterarrival(conn, now, 'udp');
 			if (sendToBrowser(conn, payload)) {
 				conn.stats.udpToWs++;
@@ -565,6 +751,7 @@ wss.on('connection', (ws, req) => {
 		ws.on('message', (data, isBinary) => {
 			if (!isBinary) return;
 			const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+			noteConnEvent(conn, 's');
 			noteInterarrival(conn, Date.now(), 'ws');
 			conn.stats.wsToUdp++;
 			conn.stats.wsBytes += buf.length;
@@ -611,6 +798,8 @@ wss.on('connection', (ws, req) => {
 			if (rinfo && (rinfo.port !== conn.udpDest.port || rinfo.address !== conn.udpDest.host))
 				return;
 			const now = Date.now();
+			noteConnEvent(conn, 'r');
+			logBigGap(conn, now, 'r');
 			noteInterarrival(conn, now, 'udp');
 			if (sendToBrowser(conn, msg)) {
 				conn.stats.udpToWs++;
@@ -656,6 +845,7 @@ wss.on('connection', (ws, req) => {
 		ws.on('message', (data, isBinary) => {
 			if (!isBinary) return;
 			const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+			noteConnEvent(conn, 's');
 			noteInterarrival(conn, Date.now(), 'ws');
 			conn.stats.wsToUdp++;
 			conn.stats.wsBytes += buf.length;
@@ -726,7 +916,8 @@ setInterval(() => {
 		console.log(`Active connections: ${activeConnections.size}`);
 		for (const [id, conn] of activeConnections) {
 			const duration = Math.round((Date.now() - conn.connectedAt) / 1000);
-			console.log(`  [${id}] ${conn.remoteAddress} → ${conn.target} (${conn.mode}, ${duration}s, ws→udp ${conn.stats.wsToUdp}, udp→ws ${conn.stats.udpToWs}, drops ${conn.stats.wsDrops + conn.stats.udpDrops}, buf ${conn.ws.bufferedAmount || 0})`);
+			const g = legGaps(conn.events, 'r', 60000, Date.now());
+			console.log(`  [${id}] ${conn.remoteAddress} → ${conn.target} (${conn.mode}, ${duration}s, ws→udp ${conn.stats.wsToUdp}, udp→ws ${conn.stats.udpToWs}, drops ${conn.stats.wsDrops + conn.stats.udpDrops}, buf ${conn.ws.bufferedAmount || 0}, srvGapMax ${g.maxGapMs == null ? '-' : g.maxGapMs + 'ms'} over ${g.packets})`);
 		}
 	}
 }, 60000);

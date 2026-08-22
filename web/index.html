@@ -795,6 +795,8 @@
 						showMapError(text);
 					if (typeof maybeRecoverMissingMap === 'function')
 						maybeRecoverMissingMap(text);
+					if (typeof handleConnectRejection === 'function')
+						handleConnectRejection(text);
 					if (text.indexOf('Disconnect:') !== -1 && !switchingServer)
 						showDisconnectToast(text);
 				}
@@ -810,11 +812,13 @@
 						showMapError(text);
 					if (typeof maybeRecoverMissingMap === 'function')
 						maybeRecoverMissingMap(text);
+					if (typeof handleConnectRejection === 'function')
+						handleConnectRejection(text);
 					if (text.indexOf('Disconnect:') !== -1 && !switchingServer)
 						showDisconnectToast(text);
 				}
 			},
-			
+
 			noInitialRun: true,
 			
 			onEngineReady: function() {
@@ -1071,11 +1075,46 @@
 			return wsUrl.replace(/^ws/, 'http');
 		}
 
+		// --- Server list SSE stream ---
+		// While the browser overlay is open, /slist/stream pushes the list
+		// periodically so ping/player/map columns stay current without the
+		// player hitting Refresh.
+		var slistStream = null;
+		var lastServersJson = '';
+		function startServerListStream() {
+			if (slistStream || typeof EventSource === 'undefined') return;
+			try {
+				slistStream = new EventSource('/slist/stream');
+			} catch (e) { return; }
+			slistStream.onmessage = function(ev) {
+				var data;
+				try { data = JSON.parse(ev.data); } catch (e) { return; }
+				if (!data || !data.servers) return;
+				var json = JSON.stringify(data.servers);
+				if (json === lastServersJson) return; // avoid rebuilding rows under the cursor
+				lastServersJson = json;
+				allServers = data.servers;
+				renderServerList();
+			};
+			slistStream.onerror = function() { /* EventSource retries on its own */ };
+		}
+		function stopServerListStream() {
+			if (!slistStream) return;
+			try { slistStream.close(); } catch (e) { /* already closed */ }
+			slistStream = null;
+			lastServersJson = '';
+		}
+		function hideServerBrowser() {
+			serverBrowser.classList.remove('show');
+			stopServerListStream();
+		}
+
 		function showServerBrowser() {
 			hideGameMenu();
 			hideConnectDialog();
 			serverBrowser.classList.add('show');
 			syncMouseCapture();
+			startServerListStream();
 			if (serverListBody.children.length === 0) {
 				refreshServerList();
 			}
@@ -1100,6 +1139,7 @@
 							return;
 						}
 						allServers = data.servers || [];
+						lastServersJson = JSON.stringify(allServers);
 						renderServerList();
 
 						if (allServers.length === 0) {
@@ -1175,7 +1215,7 @@
 						var addr = this.dataset.address;
 						var mapName = this.dataset.map;
 						var proxyUrl = document.getElementById('wsProxyUrl').value || 'ws://localhost:8081';
-						serverBrowser.classList.remove('show');
+						hideServerBrowser();
 						syncMouseCapture();
 						connectToServer(addr, mapName, proxyUrl);
 					});
@@ -1196,7 +1236,7 @@
 		document.getElementById('browseBtn').addEventListener('click', showServerBrowser);
 		document.getElementById('refreshServersBtn').addEventListener('click', refreshServerList);
 		document.getElementById('closeBrowserBtn').addEventListener('click', function() {
-			serverBrowser.classList.remove('show');
+			hideServerBrowser();
 			syncMouseCapture();
 		});
 
@@ -1280,10 +1320,40 @@
 			]);
 		}
 
+		// --- Connect rejections ---
+		// The engine prints "Connect: rejected by <addr>\n<reason>" and stops
+		// retrying (cls.connect_trying = false), which used to leave a dead
+		// screen. A full server now kicks back to the server browser; other
+		// reasons surface as a toast.
+		var rejectReasonPending = false;
+		function handleConnectRejection(text) {
+			if (typeof text !== 'string') return;
+			var reason = null;
+			if (text.indexOf('Connect: rejected by') !== -1) {
+				rejectReasonPending = true;
+				var nl = text.indexOf('\n');
+				reason = nl !== -1 ? text.slice(nl + 1).trim() : '';
+			} else if (rejectReasonPending) {
+				reason = text.trim();
+			}
+			if (reason === null) return;
+			if (!reason) return; // reason arrives on the next printed line
+			rejectReasonPending = false;
+			if (/server is full/i.test(reason)) {
+				mapDlOverlay.style.display = 'none';
+				switchingServer = false;
+				showDisconnectToast('Server is full — returning to server browser');
+				showServerBrowser();
+			} else {
+				showDisconnectToast('Connect rejected: ' + reason);
+			}
+		}
+
 		function doConnect(addr, proxyUrl, seq) {
 			if (seq !== undefined && seq !== connectSeq) return;
 			lastConnectAddr = addr;
 			lastProxyUrl = proxyUrl;
+			rejectReasonPending = false;
 			mapDlOverlay.style.display = 'none';
 			syncMouseCapture();
 			try {
@@ -1370,7 +1440,7 @@
 		function connectToServer(addr, mapName, proxyUrl) {
 			hideGameMenu();
 			hideConnectDialog();
-			serverBrowser.classList.remove('show');
+			hideServerBrowser();
 			var seq = ++connectSeq;
 			console.log('Connecting to: ' + addr + ' (map: ' + mapName + ') via ' + proxyUrl);
 			mapName = mapName || 'unknown';

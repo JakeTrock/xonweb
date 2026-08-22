@@ -72,6 +72,7 @@ Proxy (`server.js` connection handler):
 - `perMessageDeflate` is **off**. TCP_NODELAY + keepalive on the HTTP/WS socket. UDP socket is bound immediately, dest is `connect()`ed after an IPv4 lookup, recv/send buffers raised to 4 MiB
 - If `ws.bufferedAmount` exceeds 128 KiB the proxy **drops** the datagram (UDP semantics) instead of queueing a hitch into seconds of jitter
 - Application-level WS ping every 5s; RTT is on `/stats`
+- Every datagram in both directions is timestamped in an in-memory ring (8192 entries/conn); server→browser gaps >250ms are logged once per 5s (`[Conn N] server→browser gap Xms`) so `stack logs --svc proxy` shows spikes after the fact
 
 ### UDP mode (default)
 
@@ -117,9 +118,10 @@ Public Xonotic servers are UDP. Do not use TCP mode against them unless that hos
 | Path | Role |
 |---|---|
 | `GET /` | Health JSON (`status`, `connections`, `drops`, `uptimeMs`) |
-| `GET /stats` | Per-connection counters: packets, bytes, drops, `bufferedAmount`, WS ping RTT, UDP/WS interarrival. Used by `test/harness/stack netprobe` |
+| `GET /stats` | Per-connection counters: packets, bytes, drops, `bufferedAmount`, WS ping RTT, UDP/WS interarrival. Also lag-spike forensics: `gapsServerToBrowser` / `gapsBrowserToServer` (trailing 1s/5s/10s windows with `maxGapMs`, p50/p95, gaps>100/250/1000ms) and `dropsLast10s` / `dropsLast60s`. Used by `test/harness/stack netprobe` and `client spikes` |
 | `GET /getinfo?addr=host:port` | One UDP `getinfo` from the proxy. JSON infostring (includes `mapname`, `clients`). Used by `connectToServer` so a stale `/slist` map does not skip the pack the server is actually on |
-| `GET /slist` | Query official masters (`getservers Xonotic 3 empty full`), dedupe, batch `getinfo` (50), JSON `{ servers, count }`. CORS `*` |
+| `GET /slist` | Query official masters (`getservers Xonotic 3 empty full`), dedupe, batch `getinfo` (50), JSON `{ servers, count }`. CORS `*`. **Cached 60s** (a sweep takes ~13s); repeat hits return instantly with `cachedMs`, concurrent callers share one in-flight sweep, a failed refresh serves the stale list, and `?refresh=1` forces a rebuild |
+| `GET /slist/stream` | Same list as **Server-Sent Events**: cached body immediately, then every 15s; triggers a sweep only when the cache is older than the 60s TTL (masters are still hit at most ~once/minute). Used by the HTML server browser so an open listing refreshes itself |
 | `GET /resolve?host=` | First A record as `text/plain`. Engine does **not** call this today |
 | `OPTIONS` | 204 + CORS |
 

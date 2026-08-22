@@ -576,19 +576,23 @@ const server = http.createServer((req, res) => {
 
 	// Same-origin /slist passthrough: browsers reaching only :9080 (tunnels,
 	// port forwards) cannot hit the proxy's :8081 directly, which made the
-	// server browser fail with "Failed to fetch".
-	const proxyPassthrough = { '/slist': '/slist', '/getinfo': null };
-	if (urlPath === '/slist' || urlPath === '/getinfo') {
+	// server browser fail with "Failed to fetch". /slist/stream is an SSE
+	// feed; the response is piped unbuffered so events reach the page live.
+	const sseStreams = { '/slist/stream': true };
+	if (urlPath === '/slist' || urlPath === '/getinfo' || sseStreams[urlPath]) {
 		const upstream = http.request({
 			host: '127.0.0.1',
 			port: 8081,
 			path: req.url,
 			method: 'GET',
+			// SSE lives as long as the browser tab; the 15s event cadence
+			// keeps this idle timeout from firing.
 			timeout: 90000,
 		}, (up) => {
 			res.writeHead(up.statusCode || 502, coopHeaders(req, {
 				'Content-Type': up.headers['content-type'] || 'application/json',
 				'Cache-Control': 'no-store',
+				'X-Accel-Buffering': 'no',
 			}));
 			up.pipe(res);
 		});
