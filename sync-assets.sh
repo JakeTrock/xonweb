@@ -4,10 +4,11 @@
 
 set -e
 
-XON_DIR="/data/jake/reversing/xonweb/xonotic/data"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+XON_DIR="$REPO_ROOT/xonotic/data"
 DATA_DIR="$XON_DIR/xonotic-data.pk3dir"
 MAPS_DIR="$XON_DIR/xonotic-maps.pk3dir"
-ASSETS_DIR="/data/jake/reversing/xonweb/assets/game"
+ASSETS_DIR="$REPO_ROOT/assets/game"
 DATA_DEST="$ASSETS_DIR/xonotic-data.pk3dir"
 MAPS_DEST="$ASSETS_DIR/xonotic-maps.pk3dir"
 
@@ -39,6 +40,15 @@ mkdir -p "$MAPS_DEST/textures/map_xoylent" "$MAPS_DEST/textures/exx"
 rsync -a "$MAPS_DIR/textures/map_xoylent/" "$MAPS_DEST/textures/map_xoylent/"
 rsync -a "$MAPS_DIR/textures/exx/" "$MAPS_DEST/textures/exx/"
 
+# Shared map-texture packs used by community maps (mint needs trak5x/trak6x/
+# phillipk2x/common/logos/liquids/skies). MEMFS lives in the wasm heap, so the
+# preload skips *_norm/_gloss/etc at download time — sync everything anyway.
+for texdir in common decals alphamod liquids_slime liquids_water logos trak4x trak5x trak6x trak7x phillipk1x phillipk2x skies; do
+    if [ -d "$MAPS_DIR/textures/$texdir" ]; then
+        rsync -a --exclude='.git' --exclude='*.xcf' "$MAPS_DIR/textures/$texdir/" "$MAPS_DEST/textures/$texdir/"
+    fi
+done
+
 mkdir -p "$MAPS_DEST/env/extragalactic"
 rsync -a "$MAPS_DIR/env/extragalactic/" "$MAPS_DEST/env/extragalactic/"
 
@@ -56,7 +66,7 @@ cp -f "$MAPS_DIR/scripts/skies_extragalactic.shader" "$MAPS_DEST/scripts/"
 cp -f "$MAPS_DIR/scripts/shaderlist.txt" "$MAPS_DEST/scripts/" 2>/dev/null || true
 
 # Also copy common shared shaders from maps dir that exx.shader might reference
-for shader in common.shader decals.shader effects_beam.shader effects_forcefield.shader effects_item.shader effects_jumppad.shader effects_lightning.shader effects_warpzone.shader glassx.shader liquids_lava.shader liquids_slime.shader liquids_water.shader logos.shader; do
+for shader in common.shader decals.shader effects_beam.shader effects_forcefield.shader effects_item.shader effects_jumppad.shader effects_lightning.shader effects_warpzone.shader glassx.shader liquids_lava.shader liquids_slime.shader liquids_water.shader logos.shader alphamod.shader trak4x.shader trak5x.shader trak6x.shader trak7x.shader phillipk1x.shader phillipk2x.shader model_trak.shader skies_calm_sea.shader; do
     cp -f "$MAPS_DIR/scripts/$shader" "$MAPS_DEST/scripts/" 2>/dev/null || true
 done
 

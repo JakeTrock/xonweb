@@ -301,8 +301,6 @@
 			if (data) return Promise.resolve(data);
 		}
 		var pk3s = findPk3Paths(mapName);
-		// If the map name is not in any pk3 filename, scan every pack (cts_*.pk3).
-		if (!pk3s.length) pk3s = findPk3Paths('');
 		function tryNext(idx) {
 			if (idx >= pk3s.length) return Promise.resolve(null);
 			var bytes = readFile(pk3s[idx]);
@@ -338,13 +336,14 @@
 		var dest = '/game/' + relPath;
 		if (fileExists(dest)) return Promise.resolve({ path: relPath, skipped: true });
 		var url = '/game/' + relPath;
+		var FETCH_MS = 8000;
 
 		function writeFromBuffer(ab, source) {
 			writeFile(dest, new Uint8Array(ab));
 			return { path: relPath, bytes: ab.byteLength, source: source };
 		}
 
-		return getAssetCache().then(function (cache) {
+		var work = getAssetCache().then(function (cache) {
 			var cachedP = cache ? cache.match(url) : Promise.resolve(undefined);
 			return cachedP.then(function (cached) {
 				if (cached && cached.ok) {
@@ -368,6 +367,14 @@
 		}).catch(function (err) {
 			return { path: relPath, missing: true, error: err && err.message ? err.message : String(err) };
 		});
+		return Promise.race([
+			work,
+			new Promise(function (resolve) {
+				setTimeout(function () {
+					resolve({ path: relPath, missing: true, error: 'timeout' });
+				}, FETCH_MS);
+			}),
+		]);
 	}
 
 	function splitShaderBlocks(text) {
@@ -431,6 +438,21 @@
 
 	function stripExt(p) {
 		return p.replace(/\.(tga|jpg|jpeg|png|pcx)$/i, '');
+	}
+
+	// Shader names use hyphens (textures/trak5x/panel-comp1e); files use
+	// underscores in a subdir (textures/trak5x/panel/panel_comp1e.tga).
+	function foldName(s) {
+		return String(s || '').toLowerCase().replace(/-/g, '_');
+	}
+
+	function nameMatchesStem(filename, stem) {
+		if (!stem) return true;
+		if (filename === stem || filename.indexOf(stem + '.') === 0 || filename.indexOf(stem + '_') === 0)
+			return true;
+		var f = foldName(filename);
+		var s = foldName(stem);
+		return f === s || f.indexOf(s + '.') === 0 || f.indexOf(s + '_') === 0;
 	}
 
 	function shaderFileGuesses(shaderName) {
@@ -579,8 +601,13 @@
 					}
 					imagePaths = unique(imagePaths);
 					skyBases = unique(skyBases);
-					console.log('[map-assets] ' + imagePaths.length + ' image paths, ' + skyBases.length + ' skies');
-					report('Downloading textures (0/' + imagePaths.length + ')…', 20);
+					console.log('[map-assets] ' + imagePaths.length + ' image paths, ' + skyBases.length + ' skies (images loaded by the engine from the map pk3 / IDBFS)');
+					report('Map shaders ready', 90);
+					// Do not HTTP-prefetch hundreds of 768KiB TGAs. Writing them
+					// into MEMFS made Mod_ForName(maps/fuse.bsp) sit on
+					// "Loading precaches" until the 4GiB WASM heap filled.
+					imagePaths = [];
+					skyBases = [];
 
 					var toFetch = [];
 					var seenFetch = {};
@@ -594,6 +621,11 @@
 					for (var ip2 = 0; ip2 < imagePaths.length; ip2++) {
 						var loc = companionPrefix(imagePaths[ip2]);
 						if (!loc.dir) continue;
+						// textures/trak5x/panel/foo.tga is ok; textures/trak5x/panel-comp1e
+						// would dirlist the whole trak5x pack (500+ 768KiB TGAs) and hang
+						// Mod_ForName during "Loading precaches".
+						var depth = loc.dir.split('/').filter(function (s) { return !!s; }).length;
+						if (depth < 3) continue;
 						companionJobs.push(loc);
 					}
 					for (var sb = 0; sb < skyBases.length; sb++) {
@@ -626,7 +658,7 @@
 										var skyStem = job.base.split('/').pop();
 										if (base.indexOf(skyStem) !== 0) continue;
 									} else if (job.stem) {
-										if (base !== job.stem && base.indexOf(job.stem + '.') !== 0 && base.indexOf(job.stem + '_') !== 0) continue;
+										if (!nameMatchesStem(base, job.stem)) continue;
 									}
 									if (fp.indexOf('xonotic-maps.pk3dir/') === 0 || fp.indexOf('xonotic-data.pk3dir/') === 0) {
 										queueRel(fp);
@@ -642,15 +674,13 @@
 						return pool(imagePaths, CONCURRENCY, function (img) {
 							var loc = companionPrefix(img);
 							for (var t = 0; t < toFetch.length; t++) {
-								if (loc.stem && toFetch[t].indexOf(loc.stem) !== -1) return null;
+								if (loc.stem && (toFetch[t].indexOf(loc.stem) !== -1 || foldName(toFetch[t]).indexOf(foldName(loc.stem)) !== -1))
+									return null;
 							}
-							var rels = [];
-							var cands = imageRelCandidates(img);
-							for (var i = 0; i < cands.length; i++) {
-								var gd = gamedirRels(cands[i]);
-								for (var j = 0; j < gd.length; j++) rels.push(gd[j]);
-							}
-							return fetchFirstHit(rels);
+							// Guess .tga only. Trying jpg/jpeg/png here was 8 404s per
+							// shader name and stalled Chrome's HTTP/1.1 pool mid-prefetch.
+							var base = stripExt(String(img).replace(/^\/+/, '')) + '.tga';
+							return fetchFirstHit(gamedirRels(base));
 						});
 					}).then(function () {
 						toFetch = unique(toFetch);

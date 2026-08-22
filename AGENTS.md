@@ -7,7 +7,7 @@ This file is the map. Nested `AGENTS.md` files win for files under their directo
 | Path | Owns |
 |---|---|
 | [web/AGENTS.md](web/AGENTS.md) | HTML shell, static server (`:9080`) |
-| [ws-proxy/AGENTS.md](ws-proxy/AGENTS.md) | WebSocket ↔ UDP/TCP proxy (`:8081`) |
+| [ws-proxy/AGENTS.md](ws-proxy/AGENTS.md) | WebSocket ↔ UDP proxy (`:8081`); optional FakeTCP hop |
 | [assets/AGENTS.md](assets/AGENTS.md) | Files served at `/game/` |
 | [test/AGENTS.md](test/AGENTS.md) | Agent harness: CLI against a headless client; the agent judges artifacts |
 | [xonotic/AGENTS.md](xonotic/AGENTS.md) | Upstream Xonotic superproject checkout |
@@ -31,7 +31,7 @@ xonweb/
 ├── sync-assets.sh            # rsync subset of Xonotic data → assets/game
 ├── emsdk/                    # Emscripten SDK (do not clean)
 ├── web/                      # browser shell + static server
-├── ws-proxy/                 # WS↔UDP proxy + optional TCP relay
+├── ws-proxy/                 # WS↔UDP proxy + optional udp2raw FakeTCP hop
 ├── assets/game/              # HTTP tree at /game/ (MEMFS basedir)
 ├── test/                     # agent harness (CLI + artifacts, not a test runner)
 └── xonotic/                  # nested Xonotic checkout (gitlink, not a flat copy)

@@ -181,7 +181,7 @@ async function cmdStart(flags) {
 		'--enable-unsafe-swiftshader',
 		process.env.DISPLAY ? '--use-gl=angle' : '--use-gl=swiftshader',
 		'--window-size=1280,720',
-		'http://127.0.0.1:9080/?harness=1',
+		'http://127.0.0.1:9080/?harness=1&ship=1',
 	].filter(Boolean);
 	if (process.getuid && process.getuid() === 0) args.unshift('--no-sandbox');
 

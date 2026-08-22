@@ -22,6 +22,66 @@
 		if (arr.length > RING) arr.splice(0, arr.length - RING);
 	}
 
+	// ?harness=1&ship=1: mirror engine lines to the static server (POST
+	// /englog). The network process still delivers a fetch() after the
+	// renderer main thread wedges, so the last line before a hang survives.
+	var shipEnabled = /(?:^|[?&])ship=1(?:&|$)/.test(location.search);
+	var shipIdMatch = location.search.match(/[?&]id=([ab])/);
+	var shipId = shipIdMatch ? shipIdMatch[1] : 'a';
+	function ship(text, err) {
+		if (!shipEnabled) return;
+		// sendBeacon hands the request to the network process synchronously;
+		// fetch() would not be dispatched until the current task ends, which
+		// never happens if the engine hangs right after printing.
+		var body = (err ? '[E] ' : '') + text;
+		try {
+			// sync XHR: guaranteed handed to the network stack before returning,
+			// even if the engine wedges on the very next statement (beacons and
+			// async fetch() are queued and may be lost to a synchronous hang)
+			var xhr = new XMLHttpRequest();
+			xhr.open('POST', '/englog?id=' + shipId, false);
+			xhr.send(body);
+		} catch (e) { }
+	}
+
+	// Watchdog worker: runs off the main thread, so it can still report when
+	// the engine wedges mid-frame. The main thread feeds it the latest console
+	// ring plus a heartbeat; if the heartbeat stops, the worker ships the last
+	// lines to /englog.
+	function startWatchdog() {
+		if (!shipEnabled || !window.Worker) return;
+		window.__xwWdState = { created: false, ticks: 0, acked: false };
+		var src =
+			'var last=0,lines=[],sent=false;' +
+			'onmessage=function(e){' +
+			'if(e.data&&e.data.tick){' +
+			'last=Date.now();' +
+			'if(e.data.lines)lines=e.data.lines;' +
+			'if(!self._acked){self._acked=true;postMessage({wdack:true});}' +
+			'}' +
+			'};' +
+			'setInterval(function(){if(!sent&&last&&Date.now()-last>4000){sent=true;' +
+			'var xhr=new XMLHttpRequest();xhr.open("POST","/englog?id=' + shipId + '",false);' +
+			'xhr.send("[WORKDOG] main thread hung; last console lines:\\n"+lines.map(function(l){return l.t+"s "+l.text;}).join("\\n"));}' +
+			'},1000);';
+		try {
+			var w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+			window.__xwWdState.created = true;
+			w.onmessage = function (e) {
+				if (e.data && e.data.wdack) {
+					window.__xwWdState.acked = true;
+					push(jsRing, { t: now(), text: 'watchdog-armed', type: 'log' });
+				}
+			};
+			setInterval(function () {
+				window.__xwWdState.ticks++;
+				try { w.postMessage({ tick: true, lines: engine.slice(-40).map(function (l) { return { t: l.t, text: l.text }; }) }); } catch (e) { }
+			}, 500);
+		} catch (e) {
+			window.__xwWdState.error = String(e);
+		}
+	}
+
 	function hookPrint() {
 		var M = window.Module;
 		if (!M) return;
@@ -30,13 +90,16 @@
 		M.print = function (text) {
 			var s = String(text);
 			push(engine, { t: now(), text: s, err: false });
+			ship(s, false);
 			if (s.indexOf('Opening WebSocket to ') === 0)
 				lastWsUrl = s.slice('Opening WebSocket to '.length);
 			if (s.indexOf('Starting engine') !== -1) ready = true;
 			if (typeof prevPrint === 'function') prevPrint(text);
 		};
 		M.printErr = function (text) {
-			push(engine, { t: now(), text: String(text), err: true });
+			var s = String(text);
+			push(engine, { t: now(), text: s, err: true });
+			ship(s, true);
 			if (typeof prevErr === 'function') prevErr(text);
 		};
 		var prevReady = M.onEngineReady;
@@ -544,4 +607,5 @@
 
 	hookPrint();
 	hookJsConsole();
+	startWatchdog();
 })();

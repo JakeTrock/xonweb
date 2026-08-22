@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Xonotic TCP-to-UDP Relay
- * 
- * Runs on a remote server alongside the game server. Listens for TCP
- * connections (with length-prefix framing) from the WS proxy and forwards
- * each framed message as a UDP datagram to the local game server, and vice versa.
- * 
- * Architecture:
- *   Browser ←─WS─→ WS Proxy ←─TCP framed─→ tcp-relay.js ←─UDP─→ Game Server
- * 
+ * Xonotic TCP-to-UDP Relay (L7 fallback only)
+ *
+ * Real TCP + 4-byte big-endian length prefix. Retransmits stall the
+ * game (head-of-line). Prefer the FakeTCP hop:
+ *   node ws-proxy/udp2raw/hop.js server|client
+ *
+ * Use this file only when a middlebox requires a real TCP byte stream
+ * (HTTP CONNECT, L7 proxy) and FakeTCP cannot pass.
+ *
+ *   Browser ←WS→ proxy ←TCP framed→ tcp-relay.js ←UDP→ dedicated
+ *
  * Usage: node tcp-relay.js --listen 0.0.0.0:9260 --target 127.0.0.1:26000
- * 
- * Framing protocol: 4-byte big-endian length prefix + payload
  */
 
 const net = require('net');

@@ -106,7 +106,8 @@ function probeViaProxy(proxyUrl, host, port, opts) {
 	const count = opts.count || 30;
 	const timeoutMs = opts.timeoutMs || 1500;
 	const gapMs = opts.gapMs == null ? 40 : opts.gapMs;
-	const wsUrl = proxyUrl.replace(/\/+$/, '') + '/?target=' + encodeURIComponent(host + ':' + port);
+	let wsUrl = proxyUrl.replace(/\/+$/, '') + '/?target=' + encodeURIComponent(host + ':' + port);
+	if (opts.proto) wsUrl += '&proto=' + encodeURIComponent(opts.proto);
 	return new Promise((resolve) => {
 		const rtts = [];
 		let sent = 0;

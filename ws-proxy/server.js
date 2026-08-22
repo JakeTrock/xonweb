@@ -12,11 +12,11 @@
  *   WebSocket binary messages → UDP datagrams to target
  *   UDP datagrams from target → WebSocket binary messages
  * 
- * TCP bridge mode:
+ * TCP bridge mode (L7 fallback; prefer udp2raw/hop.js FakeTCP):
  *   ws://proxy:8081/?target=game.example.com:9260&proto=tcp
  *   WebSocket binary messages → length-prefixed TCP frames to target
  *   Length-prefixed TCP frames from target → WebSocket binary messages
- *   Use with tcp-relay.js on the remote server to bridge to a local UDP game server.
+ *   Use with tcp-relay.js only when a middlebox requires a real TCP stream.
  */
 
 const dgram = require('dgram');

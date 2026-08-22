@@ -8,8 +8,9 @@ Parent: [../AGENTS.md](../AGENTS.md). Client URL construction: [../xonotic/darkp
 
 | File | Role |
 |---|---|
-| `server.js` | HTTP + WS on **8081**. UDP mode (default) and TCP-framed mode |
-| `tcp-relay.js` | Optional remote hop: TCP framed ↔ local UDP game server |
+| `server.js` | HTTP + WS on **8081**. UDP mode (default) and L7 TCP-framed mode |
+| `udp2raw/hop.js` | Fetch/run [udp2raw](https://github.com/wangyu-/udp2raw) FakeTCP hop (preferred when UDP is blocked) |
+| `tcp-relay.js` | L7 fallback only: real TCP framed ↔ local UDP. HOL blocking |
 | `package.json` | `ws ^8.16.0`. `npm start` → `node server.js` |
 
 ## Run
@@ -21,18 +22,33 @@ node server.js
 # node server.js --port=8081 --default-target=127.0.0.1:26000
 ```
 
-UDP (what local tests use):
+UDP (what local tests and public servers use):
 
 ```
 ws://localhost:8081/?target=127.0.0.1:26000
 Sec-WebSocket-Protocol: binary
 ```
 
-TCP (only if a relay is listening next to the game):
+FakeTCP hop (when the path from this host to the dedicated cannot carry UDP). Browser stays in UDP mode; udp2raw sits next to the game:
+
+```
+# on the dedicated host (needs root / CAP_NET_RAW + iptables):
+node udp2raw/hop.js server --listen=0.0.0.0:4096 --target=127.0.0.1:26000 --key=secret
+
+# on the proxy host:
+node udp2raw/hop.js client --listen=127.0.0.1:26001 --remote=<dedicated-host>:4096 --key=secret
+
+# WASM still:
+ws://localhost:8081/?target=127.0.0.1:26001
+connect 127.0.0.1:26001
+```
+
+`hop.js fetch` downloads the pinned `20230206.0` linux amd64 binary into `udp2raw/bin/` (gitignored). `--raw-mode` defaults to `faketcp` when `sudo -n` works, else `easy-faketcp` (loopback-only; will not pass a real UDP firewall). Local sandwich: `test/harness/stack start --faketcp` then `stack netprobe --faketcp`.
+
+L7 TCP fallback (only if a middlebox requires a real TCP byte stream):
 
 ```
 ws://localhost:8081/?target=127.0.0.1:9260&proto=tcp
-# plus:
 node tcp-relay.js --listen=0.0.0.0:9260 --target=127.0.0.1:26000
 ```
 
@@ -66,17 +82,25 @@ Proxy (`server.js` connection handler):
 
 Text frames are dropped. There is no dest header, sequence number, or ack.
 
-### TCP mode
+### FakeTCP hop (udp2raw)
 
-Same WS binary payloads. On the TCP side: `4-byte big-endian length + payload`, max 1 MiB. Larger frames log and **wipe the parse buffer** (desync). `tcp-relay.js` uses the same framing and emits UDP to `--target`.
+Not a WebSocket protocol. `server.js` still maps one WS binary message to one UDP datagram. udp2raw wraps that UDP in FakeTCP (looks like TCP to L3/L4 firewalls, stays datagrams: loss and reorder, no retransmission). Cipher/auth default `xor`/`simple` with `--disable-anti-replay` for game latency.
 
-Architecture:
+```
+Browser ←WS→ proxy ←UDP→ udp2raw client ←FakeTCP→ udp2raw server ←UDP→ dedicated
+```
+
+Do not point `em_wss` at udp2raw. The engine cannot speak its tunnel protocol.
+
+### TCP mode (L7 fallback)
+
+Same WS binary payloads. On the TCP side: `4-byte big-endian length + payload`, max 1 MiB. Larger frames log and **wipe the parse buffer** (desync). `tcp-relay.js` uses the same framing and emits UDP to `--target`. This is **real TCP**: a lost packet stalls the match. Prefer FakeTCP unless an L7 proxy is in the way.
 
 ```
 Browser ←WS→ proxy ←TCP framed→ tcp-relay.js ←UDP→ dedicated
 ```
 
-Public Xonotic servers are UDP. Do not use TCP mode against them unless that host runs `tcp-relay.js`.
+Public Xonotic servers are UDP. Do not use TCP mode against them unless that host runs `tcp-relay.js`. Do not use FakeTCP against them unless that host runs `hop.js server`.
 
 ## Socket lifecycle
 
@@ -114,7 +138,7 @@ UDP mode works for any IPv4 dedicated the **proxy host** can reach. The server s
 
 ## Security
 
-This is an **open UDP (and TCP) relay**. No auth, allowlist, or rate limit. Anyone who can hit `:8081` can emit arbitrary UDP from this host via `?target=`. `/resolve` is an open DNS stub; `/slist` makes the proxy hammer masters and every listed server.
+This is an **open UDP (and TCP) relay**. No auth, allowlist, or rate limit. Anyone who can hit `:8081` can emit arbitrary UDP from this host via `?target=`. `/resolve` is an open DNS stub; `/slist` makes the proxy hammer masters and every listed server. udp2raw’s `-k` only authenticates the FakeTCP hop, not the browser WS.
 
 Fine on localhost / trusted LAN. Before binding this to the public internet: dest allowlist (or ignore client `target` and force `--default-target`), bind localhost/VPN, origin/token check, rate limits, consider disabling `/resolve`.
 
@@ -124,6 +148,8 @@ Do not “clean up” the connectionless `\xff\xff\xff\xff` payload or add frami
 
 - `--default-target` is only used when the URL has no `target`. The engine always sends `target=`
 - TCP connect failure does not close the WS; traffic just fails
+- FakeTCP (`hop.js server` / `client`) needs root or `sudo -n` for `--raw-mode faketcp -a`. SIGTERM must reach udp2raw so it deletes its iptables chain
+- `easy-faketcp` is a no-root loopback test, not a firewall bypass
 - Idle load balancers can still drop the socket if they ignore WS pings; the engine reconnects on the next write (new ephemeral port = a new client on the server)
 - Do not delete `node_modules/` as cleanup
 - Turning `perMessageDeflate` back on, or allowing Nagle, will look like in-game lag even on an empty public server. Measure with `test/harness/stack netprobe --addr <ip:port>` (direct UDP getinfo vs the same query through the WS hop). Local overhead should be a few milliseconds, not tens.

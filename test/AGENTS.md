@@ -39,11 +39,11 @@ Chrome is driven with the **DevTools Protocol** over a WebSocket (the `ws` packa
 ### Stack
 
 ```bash
-test/harness/stack start [--map mint]   # web :9080, proxy :8081, dedicated :26000
+test/harness/stack start [--map mint] [--faketcp]   # web :9080, proxy :8081, dedicated :26000; optional udp2raw hop on :26001
 test/harness/stack status               # health JSON; non-zero if any service down
 test/harness/stack stop
 test/harness/stack logs [--svc web|proxy|dedicated]
-test/harness/stack netprobe [--addr host:port] [--count 30]
+test/harness/stack netprobe [--addr host:port] [--count 30] [--faketcp]
 ```
 
 `netprobe` compares **direct UDP `getinfo`** to the same query through `ws://127.0.0.1:8081/?target=…`. That isolates the bridge from SwiftShader hitch. Writes `test/artifacts/<run>/netprobe.json` with `verdict.deficient` / `reasons` (the CLI still exits 0 unless the tool itself failed). Default `--addr` is the local dedicated (`127.0.0.1:26000`). For a public empty server, pass that `ip:port`. Local overhead should be a few milliseconds; tens of ms extra, loss, or WS ping ≫ loopback means the proxy is the hitch.
@@ -114,8 +114,10 @@ Phases:
 --remote-debugging-port=<cdp>
 --autoplay-policy=no-user-gesture-required
 --disable-gpu-sandbox
-http://127.0.0.1:9080/?harness=1
+http://127.0.0.1:9080/?harness=1&ship=1
 ```
+
+`ship=1` makes the bridge mirror every engine console line to `POST /englog` on the static server (sync XHR, survives a wedged main thread) and arms a watchdog Worker that ships the last 40 lines if the main thread hangs. Log lands in `test/artifacts/current/englog-<id>.txt`.
 
 Chrome binary: `CHROME_PATH`, then `test/browsers/` (install with `npx --yes @puppeteer/browsers install chrome@stable --path test/browsers`), then `google-chrome` / `chromium`. Prefer real GL (EGL/ANGLE). Software GL is a last resort; say so in `state.json` (`renderer`). Headless on a machine with no `DISPLAY` uses SwiftShader (`--use-gl=swiftshader`); one match renderer is typically **2–2.8 GiB RSS**. `--headed` is the same CDP API, just visible.
 
@@ -345,7 +347,7 @@ Scripts do **not** print PASS/FAIL. The agent does, after reading artifacts. A c
 | `mp-2p` | two `--id`s through the same flow on a host that can hold two SwiftShader WASM heaps | both `state.connected`; proxy `connections` ≥ 2; dedicated two `is now playing` and no `dropped (Timed out)`; `status` shows both names | either drops; live-view stills from different clocks; only one `connections` |
 | `net` | `stack netprobe` (local and/or `--addr` of an empty public server); in-match `client netprobe --seconds 8` | `verdict.deficient === false`; proxy overhead a few ms vs direct UDP; engine `packetsReceived` rising; no `sinceLastMessage` > 0.5s | proxy p50 tens of ms above direct; getinfo loss; `/stats` drops; stalled `mtime` / origin teleports |
 
-TCP bridge is optional and not part of the base set. Public servers are a product goal; the gated path is local dedicated + proxy.
+The FakeTCP hop (`stack start --faketcp`) is optional and not part of the base set. It runs [udp2raw](https://github.com/wangyu-/udp2raw) so `connect 127.0.0.1:26001` still looks like UDP to the proxy while the path to `:26000` is FakeTCP. The old length-prefixed `tcp-relay.js` path is an L7 fallback only. Public servers are a product goal; the gated path is local dedicated + proxy.
 
 Do not claim “in-game works” from a Join-dialog screenshot. That was the failure mode of the old probes.
 

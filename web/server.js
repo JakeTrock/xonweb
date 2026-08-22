@@ -549,11 +549,59 @@ const server = http.createServer((req, res) => {
 		return;
 	}
 
+	// Debug ingest: engine console lines from a client that may hang. The
+	// network process still delivers a fetch() after the renderer main thread
+	// wedges, so the last line before a hang survives here.
+	if (req.method === 'POST' && urlPath === '/englog') {
+		const id = (req.url.split('?')[1] || '') === 'id=b' ? 'b' : 'a';
+		let body = '';
+		req.on('data', (c) => { body += c; if (body.length > 16384) req.destroy(); });
+		req.on('end', () => {
+			try {
+				const dir = path.join(REPO_ROOT, 'test', 'artifacts', 'current');
+				fs.mkdirSync(dir, { recursive: true });
+				fs.appendFileSync(path.join(dir, 'englog-' + id + '.txt'), body + '\n');
+			} catch (err) { /* best effort */ }
+			res.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
+			res.end();
+		});
+		return;
+	}
+
 	if (req.method === 'OPTIONS') {
 		res.writeHead(204, coopHeaders(req));
 		res.end();
 		return;
 	}
+
+	// Same-origin /slist passthrough: browsers reaching only :9080 (tunnels,
+	// port forwards) cannot hit the proxy's :8081 directly, which made the
+	// server browser fail with "Failed to fetch".
+	const proxyPassthrough = { '/slist': '/slist', '/getinfo': null };
+	if (urlPath === '/slist' || urlPath === '/getinfo') {
+		const upstream = http.request({
+			host: '127.0.0.1',
+			port: 8081,
+			path: req.url,
+			method: 'GET',
+			timeout: 90000,
+		}, (up) => {
+			res.writeHead(up.statusCode || 502, coopHeaders(req, {
+				'Content-Type': up.headers['content-type'] || 'application/json',
+				'Cache-Control': 'no-store',
+			}));
+			up.pipe(res);
+		});
+		upstream.on('timeout', () => upstream.destroy(new Error('proxy timeout')));
+		upstream.on('error', (err) => {
+			if (res.headersSent) { res.end(); return; }
+			res.writeHead(502, coopHeaders(req, { 'Content-Type': 'application/json' }));
+			res.end(JSON.stringify({ error: 'proxy unreachable: ' + err.message }));
+		});
+		upstream.end();
+		return;
+	}
+
 
 	const plainHtml = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' };
 	if (urlPath === '/view' || urlPath === '/view/') {
@@ -734,9 +782,9 @@ const server = http.createServer((req, res) => {
 			if (!notFoundCounts[urlPath]) {
 				notFoundCounts[urlPath] = 0;
 				notFoundPaths.add(urlPath);
+				console.error('404: ' + urlPath);
 			}
 			notFoundCounts[urlPath]++;
-			console.error('404: ' + urlPath + ' (count: ' + notFoundCounts[urlPath] + ')');
 			res.writeHead(404);
 			res.end('Not Found: ' + urlPath);
 			return;
@@ -749,7 +797,7 @@ const server = http.createServer((req, res) => {
 		res.setHeader('Content-Type', mime);
 		res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
 		res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-		applyCoop(req, res);
+	applyCoop(req, res);
 		res.setHeader('Last-Modified', stats.mtime.toUTCString());
 
 		const cacheControl = cacheControlFor(urlPath, ext);
@@ -788,6 +836,26 @@ const server = http.createServer((req, res) => {
 			console.log(`200 ${urlPath} (${sizeKB} KB)`);
 		}
 	});
+});
+
+// Tunnel WebSocket upgrades to the WS proxy (:8081) so clients only need
+// this port (9080) — game traffic, server list, and assets all ride one port.
+const net = require('net');
+server.on('upgrade', function (req, socket) {
+	const upstream = net.connect(8081, '127.0.0.1', () => {
+		const lines = [`${req.method} ${req.url} HTTP/1.1`];
+		for (let i = 0; i < req.rawHeaders.length; i += 2) {
+			lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+		}
+		upstream.write(lines.join('\r\n') + '\r\n\r\n');
+		socket.pipe(upstream);
+		upstream.pipe(socket);
+	});
+	upstream.on('error', () => { try { socket.destroy(); } catch (e) { } });
+	socket.on('error', () => { try { upstream.destroy(); } catch (e) { } });
+});
+server.on('clientError', (err, socket) => {
+	try { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); else socket.destroy(); } catch (e) { }
 });
 
 server.listen(PORT, '0.0.0.0', () => {

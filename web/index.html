@@ -534,8 +534,8 @@
 					<div class="settings-row">
 						<label>Quality</label>
 						<select id="quality">
-							<option value="fast">Fast</option>
-							<option value="normal" selected>Normal</option>
+							<option value="fast" selected>Fast</option>
+							<option value="normal">Normal</option>
 							<option value="high">High</option>
 						</select>
 					</div>
@@ -562,8 +562,8 @@
 			<input type="text" id="serverAddress" value="localhost:26000" placeholder="host:port">
 			<label>Connection Mode</label>
 			<select id="connectMode">
-				<option value="udp">WebSocket (UDP)</option>
-				<option value="tcp">TCP Bridge</option>
+				<option value="udp">WebSocket → UDP (default)</option>
+				<option value="tcp">WebSocket → TCP relay (L7 fallback)</option>
 			</select>
 			<label>WS Proxy URL</label>
 			<input type="text" id="wsProxyUrlConnect" value="ws://localhost:8081" placeholder="ws://proxy:port">
@@ -741,18 +741,19 @@
 			engineStarted = true;
 			document.getElementById('loadingOverlay').classList.add('hidden');
 			document.getElementById('toolbar').style.display = 'flex';
+			// Auto-detect WS proxy URL first: same-origin by default (the web
+			// server tunnels WS upgrades to the proxy), so forwarded/tunneled
+			// clients only ever need this one port.
+			(function() {
+				var wsBase = (location.protocol === 'https:' ? 'wss://' : 'ws://') + (location.host || 'localhost:9080');
+				var el1 = document.getElementById('wsProxyUrl');
+				var el2 = document.getElementById('wsProxyUrlConnect');
+				if (el1 && /^ws:\/\/(localhost|127\.0\.0\.1):8081$/.test(el1.value)) el1.value = wsBase;
+				if (el2 && /^ws:\/\/(localhost|127\.0\.0\.1):8081$/.test(el2.value)) el2.value = wsBase;
+			})();
 			// Set WS proxy URL before navigating, so server list queries work
 			var proxyUrl = document.getElementById("wsProxyUrl") ? document.getElementById("wsProxyUrl").value : "ws://localhost:8081";
 			try { Module.ccall("em_exec", null, ["string"], ["em_wss " + proxyUrl + " binary"]); } catch(e) { console.log("em_wss failed:", e.message); }
-			// Auto-detect WS proxy URL based on current page host
-			(function() {
-				var host = location.hostname || 'localhost';
-				var proxyUrl = 'ws://' + host + ':8081';
-				var el1 = document.getElementById('wsProxyUrl');
-				var el2 = document.getElementById('wsProxyUrlConnect');
-				if (el1) el1.value = proxyUrl;
-				if (el2) el2.value = proxyUrl;
-			})();
 			// Close the built-in C menu and steal Esc from it (HTML gear menu handles Esc)
 			setTimeout(function() {
 				try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch(e) { console.log('togglemenu 0 failed:', e.message); }
@@ -820,8 +821,31 @@
 				// forceqmenu 1 skips menu.dat, so "menu: program loaded" never prints.
 				console.log('Engine started, showing UI...');
 				showClickToPlay();
+				applySoftwareGlProfile();
 			},
 		};
+
+		function applySoftwareGlProfile() {
+			try {
+				var canvas = document.getElementById('canvas');
+				if (!canvas) return;
+				var gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+				if (!gl) return;
+				var ext = gl.getExtension('WEBGL_debug_renderer_info');
+				var renderer = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '') : String(gl.getParameter(gl.RENDERER) || '');
+				if (!/SwiftShader|llvmpipe|softpipe|Microsoft Basic Render/i.test(renderer))
+					return;
+				console.log('Software GL (' + renderer + '): disabling realtime lights');
+				if (window.Module && typeof Module.ccall === 'function') {
+					Module.ccall('em_exec', null, ['string'], ['r_shadow_realtime_dlight 0']);
+					Module.ccall('em_exec', null, ['string'], ['r_shadow_realtime_world 0']);
+					Module.ccall('em_exec', null, ['string'], ['r_glsl 0']);
+					Module.ccall('em_exec', null, ['string'], ['cl_decals 0']);
+					Module.ccall('em_exec', null, ['string'], ['r_coronas 0']);
+					Module.ccall('em_exec', null, ['string'], ['r_shadows 0']);
+				}
+			} catch (e) { /* ignore */ }
+		}
 
 		// --- Settings → autoexec.cfg generation ---
 		function generateAutoexec() {
@@ -837,7 +861,7 @@
 			var colorVal = selectedShirt * 16 + selectedPants;
 
 			var qualitySettings = {
-				fast:   'r_shadow_realtime_dlight 0\nr_shadow_realtime_world 0\nr_glsl 0\ncl_decals 0\nr_coronas 0',
+				fast:   'r_shadow_realtime_dlight 0\nr_shadow_realtime_world 0\nr_glsl 0\ncl_decals 0\nr_coronas 0\ngl_picmip 1',
 				normal: 'r_shadow_realtime_dlight 1\nr_shadow_realtime_world 0\nr_glsl 1\ncl_decals 1\nr_coronas 1',
 				high:   'r_shadow_realtime_dlight 1\nr_shadow_realtime_world 1\nr_glsl 1\ncl_decals 1\nr_coronas 1'
 			};
@@ -872,7 +896,7 @@
 			
 			// Load the WASM engine script now (after settings are set)
 			var script = document.createElement('script');
-			script.src = 'darkplaces-wasm.js';
+			script.src = 'darkplaces-wasm.js?boot=' + Date.now();
 			document.body.appendChild(script);
 		});
 
@@ -1020,11 +1044,13 @@
 			var sortDir = 'asc';
 
 			function refreshServerList() {
-				var httpUrl = getProxyHttpUrl();
+				// Same-origin: the web server proxies to the WS proxy's /slist.
+				// Clients that can only reach :9080 (tunnels) cannot fetch the
+				// proxy's :8081 directly.
 				serverBrowserStatus.textContent = 'Querying master servers...';
 				serverListBody.innerHTML = '';
 
-				fetch(httpUrl + '/slist')
+				fetch('/slist')
 					.then(function(r) { return r.json(); })
 					.then(function(data) {
 						if (data.error) {
@@ -1181,11 +1207,33 @@
 				console.warn('map-assets.js not loaded; skipping texture prefetch');
 				return Promise.resolve();
 			}
-			return window.xonMapAssets.prefetch(mapName, function(info) {
+			var timedOut = false;
+			var settled = false;
+			var p = window.xonMapAssets.prefetch(mapName, function(info) {
+				if (timedOut) return;
 				mapDlTitle.textContent = 'Loading textures: ' + mapName;
 				mapDlStatus.textContent = info.status || 'Downloading textures...';
 				mapDlProgress.style.width = (info.percent || 0) + '%';
+			}).then(function (stats) {
+				settled = true;
+				return stats;
 			});
+			p.then(function () {
+				if (!timedOut) return;
+				try { engineExec('fs_rescan'); } catch (e) { /* engine may not be up */ }
+			});
+			return Promise.race([
+				p,
+				new Promise(function (resolve) {
+					setTimeout(function () {
+						if (settled) return resolve();
+						timedOut = true;
+						console.warn('[map-assets] prefetch still running after 15s; connecting anyway');
+						mapDlStatus.textContent = 'Connecting (textures still downloading)…';
+						resolve();
+					}, 15000);
+				}),
+			]);
 		}
 
 		function doConnect(addr, proxyUrl, seq) {
@@ -1228,8 +1276,8 @@
 		}
 
 		function liveMapName(addr, fallback, proxyUrl) {
-			var httpProxy = String(proxyUrl || 'ws://127.0.0.1:8081').replace(/^ws/, 'http').replace(/\/$/, '');
-			return fetch(httpProxy + '/getinfo?addr=' + encodeURIComponent(addr)).then(function(res) {
+			// Same-origin: web server proxies /getinfo to the WS proxy
+			return fetch('/getinfo?addr=' + encodeURIComponent(addr)).then(function(res) {
 				if (!res.ok) throw new Error('getinfo HTTP ' + res.status);
 				return res.json();
 			}).then(function(info) {

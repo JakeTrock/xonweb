@@ -63,7 +63,7 @@ MIME: `.pk3` is `application/zip`. Unknown extensions are `application/octet-str
    - write `/game/xonotic-data.pk3dir/autoexec.cfg` (`forceqmenu 1`, vid size, then the settings block)
    - `Module.callMain(['-basedir','/game','-game','xonotic-data.pk3dir','-game','xonotic-maps.pk3dir'])`
 6. HTML `print`/`printErr` watch for `menu: program loaded` / `menu: program is not loaded`, then `showClickToPlay()`: hide overlay, show the gear (`#toolbar` / `#gearBtn`), `em_wss <proxy> binary`, `togglemenu 0`, `unbind ESCAPE`, open the HTML **server browser**. `onEngineReady` (right after `callMain`) also calls `showClickToPlay` because `forceqmenu 1` skips menu QC. Do not wait 30s. Esc (and the gear) open `#gameMenu` (Browse / Settings / Console) instead of the engine menu. Direct Connect is a header button on the server browser.
-7. Player picks a server row → `connectToServer(addr, map, proxy)`: **`disconnect` first** if already in a match, then skip download if a MEMFS `.pk3` **filename** contains the map name; otherwise `#mapDownloadOverlay` via `/mapdl/` + `downloadPack`. Then `map-assets.js` prefetches that BSP’s shaders + referenced textures **and entity-lump sounds** from `/game/` (assets, then `xonotic/data`) into MEMFS, Cache Storage (`xon-postboot-v1`), and IDBFS, `fs_rescan`, then `em_wss` + `connect`. The checkerboard notexture is only used if a file 404s. A second pick while in-match leaves the old dedicated immediately; a later pick cancels an in-flight download. After connect, the dedicated may `stuffcmd` `curl --pak …`; WASM curl GETs `/curlproxy?url=` and writes `dlcache/`.
+7. Player picks a server row → `connectToServer(addr, map, proxy)`: **`disconnect` first** if already in a match, then skip download if a MEMFS `.pk3` **filename** contains the map name; otherwise `#mapDownloadOverlay` via `/mapdl/` + `downloadPack`. Then `map-assets.js` fetches that BSP’s **shaders** (not hundreds of TGAs — that filled the 4GiB heap and froze `Loading precaches` on Inquire). `fs_rescan`, then `em_wss` + `connect`. Prefetch is capped at **15s**. A second pick while in-match leaves the old dedicated immediately. After connect, the dedicated may `stuffcmd` `curl --pak …`; WASM does not block the world load on that (20s `/curlproxy` abort).
 8. In-match QC Join/Spectate may still appear. `em_exec('join')` is necessary but often **not** sufficient — the HUD says Press SPACE; SDL needs a real key on `#canvas`. Close `#serverBrowser` (`#closeBrowserBtn`); `phase() === 'match'` can still have the browser overlay up.
 
 `window.__xon.pick(query, mapName)` falls back to `connectToServer` with `mapName || 'unknown'`. Harness `pick --local` without `--map` therefore requests `cts_unknown.pk3`. Pass the dedicated’s current map.
@@ -81,7 +81,7 @@ Module.ccall('em_exec', null, ['string'], ['connect 127.0.0.1:26000']);
 
 `em_exec` is `EMSCRIPTEN_KEEPALIVE` (`sys_wasm.c`). Keep `ccall`, `callMain`, `FS`, `IDBFS` in `EXPORTED_RUNTIME_METHODS` (see DarkPlaces `makefile.inc`).
 
-Server-browser rows call `connectToServer` (`disconnect`, map download, then `em_wss` + `connect` with **no** delay). The Direct Connect dialog (`#connectMenuBtn` in the browser header) uses the same path. TCP mode appends `?proto=tcp` to the proxy URL. `window.xonUi.connectToServer` is the same function the harness `pick` uses.
+Server-browser rows call `connectToServer` (`disconnect`, map download, then `em_wss` + `connect` with **no** delay). The Direct Connect dialog (`#connectMenuBtn` in the browser header) uses the same path. The L7 TCP-relay option appends `?proto=tcp` to the proxy URL (only for `tcp-relay.js`; the FakeTCP hop is still UDP mode — connect to the udp2raw client port). `window.xonUi.connectToServer` is the same function the harness `pick` uses.
 
 Server list: convert `ws://host:8081` → `http://host:8081/slist`. After Play, proxy inputs are rewritten to `ws://` + `location.hostname` + `:8081` so a non-localhost page still finds the proxy.
 
@@ -107,8 +107,10 @@ set vid_width <innerWidth>
 set vid_height <innerHeight>
 name / _cl_playermodel / _cl_playerskin / _cl_color
 volume / bgmvolume / fov / vid_pixelheight
-quality cvars (r_shadow_*, r_glsl, cl_decals, r_coronas)
+quality cvars (r_shadow_*, r_glsl, cl_decals, r_coronas); default Fast
 net_slist_favorites
+r_shadow_realtime_world 0 (always, appended after settings)
+Software GL (SwiftShader): onEngineReady also disables dlights/GLSL
 ```
 
 `forceqmenu 1` means the HTML UI **is** the menu. Do not wait on in-engine Multiplayer screens in tests.

@@ -203,6 +203,7 @@ function parseArgs(argv) {
 		else if (a.startsWith('--addr=')) flags.addr = a.slice(7);
 		else if (a === '--count') flags.count = parseInt(next(), 10);
 		else if (a.startsWith('--count=')) flags.count = parseInt(a.slice(8), 10);
+		else if (a === '--faketcp') flags.faketcp = true;
 		else if (a.startsWith('--')) throw new Error('unknown flag ' + a);
 		else positional.push(a);
 	}
