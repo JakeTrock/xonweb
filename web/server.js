@@ -4,6 +4,7 @@
 
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
@@ -50,6 +51,46 @@ const MIME_TYPES = {
 	'.pk3dir': 'application/octet-stream',
 	'.shader': 'text/plain',
 };
+
+// Text-ish responses are worth gzipping; the 4 MB engine blob is the big win
+// (4.2 MB → ~1.3 MB on the wire). Binary assets (.tga/.ogg/.pk3/…) are already
+// compressed — do not waste CPU on them.
+const GZIP_EXTS = new Set(['.js', '.html', '.json', '.css', '.txt', '.cfg', '.shader', '.mapinfo']);
+const GZIP_MIN_BYTES = 1024;
+const GZIP_MAX_BYTES = 64 * 1024 * 1024;
+
+// Small memo of compressed bodies keyed by path+mtime+size so the engine blob
+// is gzipped once, not per request. Invalidated by mtime; capped for safety.
+const gzipMemo = new Map();
+const GZIP_MEMO_MAX = 16;
+
+function acceptsGzip(req) {
+	const ae = req.headers['accept-encoding'] || '';
+	return /\bgzip\b/i.test(ae);
+}
+
+function gzipFor(resolvedPath, stats, cb) {
+	const key = resolvedPath + ':' + stats.mtimeMs + ':' + stats.size;
+	const hit = gzipMemo.get(key);
+	if (hit) {
+		// refresh recency
+		gzipMemo.delete(key);
+		gzipMemo.set(key, hit);
+		process.nextTick(() => cb(null, hit));
+		return;
+	}
+	fs.readFile(resolvedPath, (err, data) => {
+		if (err) return cb(err);
+		zlib.gzip(data, { level: zlib.constants.Z_BEST_COMPRESSION }, (err, buf) => {
+			if (err) return cb(err);
+			gzipMemo.set(key, buf);
+			if (gzipMemo.size > GZIP_MEMO_MAX) {
+				gzipMemo.delete(gzipMemo.keys().next().value);
+			}
+			cb(null, buf);
+		});
+	});
+}
 
 // Map packs, textures, sounds, models fetched after the first-run /filelist.
 // Long-lived so a second visit does not re-download them over the network.
@@ -807,8 +848,15 @@ const server = http.createServer((req, res) => {
 		const cacheControl = cacheControlFor(urlPath, ext);
 		if (cacheControl) res.setHeader('Cache-Control', cacheControl);
 		
-		// Support range requests for large files
+		// Support range requests for large files. Range responses stay
+		// identity (Content-Range byte math is meaningless on a gzipped body).
 		const range = req.headers.range;
+		const canGzip = !range
+			&& (req.method === 'GET' || req.method === 'HEAD')
+			&& acceptsGzip(req)
+			&& GZIP_EXTS.has(ext)
+			&& stats.size >= GZIP_MIN_BYTES
+			&& stats.size <= GZIP_MAX_BYTES;
 		if (range) {
 			const parts = range.replace(/bytes=/, '').split('-');
 			const start = parseInt(parts[0], 10);
@@ -825,11 +873,27 @@ const server = http.createServer((req, res) => {
 			
 			const stream = fs.createReadStream(resolvedPath, { start, end });
 			stream.pipe(res);
+		} else if (canGzip) {
+			gzipFor(resolvedPath, stats, (err, buf) => {
+				if (err || !buf) {
+					// fall back to identity rather than failing the request
+					res.setHeader('Content-Length', stats.size);
+					res.setHeader('Accept-Ranges', 'bytes');
+					res.writeHead(200);
+					if (req.method !== 'HEAD') fs.createReadStream(resolvedPath).pipe(res);
+					else res.end();
+					return;
+				}
+				res.setHeader('Content-Encoding', 'gzip');
+				res.setHeader('Vary', 'Accept-Encoding, Origin');
+				res.setHeader('Content-Length', buf.length);
+				res.writeHead(200);
+				res.end(req.method === 'HEAD' ? undefined : buf);
+			});
 		} else {
 			res.setHeader('Content-Length', stats.size);
 			res.setHeader('Accept-Ranges', 'bytes');
 			res.writeHead(200);
-			
 			const stream = fs.createReadStream(resolvedPath);
 			stream.pipe(res);
 		}
