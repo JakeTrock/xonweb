@@ -254,10 +254,37 @@ test/harness/client state  [--id a]                       # telemetry JSON (see 
 test/harness/client ui     [--id a]                       # which HTML overlays are visible
 test/harness/client net    [--id a]                       # proxy URL, WS open, last target
 test/harness/client netprobe [--id a] [--seconds 8] [--hz 10]  # sample em_state + GET proxy /stats; writes netprobe.json
+test/harness/client spikes [--id a] [--seconds 20] [--hz 4]    # lag-spike attribution; writes spikes.json + spikes.jsonl
 test/harness/client gl     [--id a]                       # WebGL vendor/renderer, context lost?
 test/harness/client cvar   [--id a] <name>                # exec the cvar, capture the `"name" is "value"` line
 test/harness/client players [--id a]                      # last status / server players if printed
 ```
+
+### Lag-spike attribution (`client spikes`)
+
+For remote-server hitches (spectating counts — QC spectate still pulls full snapshots), run this while the session sits on the server. Each sample records **three legs at once**, so the verdict can name the guilty hop instead of just "laggy":
+
+| Leg | Source | Answers |
+|---|---|---|
+| engine | `em_state` (`sinceLastMessage`, `mtime`, `fps`) | did the client actually starve? |
+| server→proxy→browser | proxy `/stats` `gapsServerToBrowser` (1s/5s/10s trailing windows: maxGapMs, p95, gaps>100/250/1000ms) | did datagrams stall before the proxy? |
+| proxy→browser rx | page WS frame spy (`__xon.netspy()` `rx.maxGapMs`) | did frames arrive at the proxy but not the page? |
+| browser tx | spy `tx.maxGapMs` + `maxBufferedAfter` | did the page stop flushing sends (wedged main thread)? |
+
+Read `spikes.json` → `verdict.attribution[]`: first leg that saw a gap while the engine starved wins; legs that stayed quiet are exonerated. A clean net with `fpsMin` low means renderer hitch (SwiftShader), not the bridge. Proxy drops during the run show up as `proxyDropsDuringRun`. Raw per-sample rows (including every spy socket) are in `spikes.jsonl`.
+
+Typical remote diagnosis:
+
+```bash
+# connect/spectate Inquire via the product path first, then:
+test/harness/client pick --id a '<inquire-ip>:port' --map <map>
+test/harness/client wait-phase --id a match
+test/harness/client spikes --id a --seconds 30
+# cross-check the wire itself:
+test/harness/stack netprobe --addr <inquire-ip>:<port> --count 40
+```
+
+If `spikes` blames server→proxy but direct UDP getinfo to the same address is clean, suspect the proxy's per-browser WS leg (bufferedAmount backpressure) or proxy-host CPU; if both blame upstream, it is the dedicated/path, not xonweb code.
 
 `ui` reports booleans: `settingsPanel`, `loadingOverlay`, `toolbar`, `gameMenu`, `connectDialog`, `serverBrowser`, `htmlConsole`, plus a guess for the Join/Spectate QC overlay (from the last `--page` shot only if you just took one — otherwise “unknown”). Use `shot --page` when `ui` is not enough.
 
@@ -346,6 +373,7 @@ Scripts do **not** print PASS/FAIL. The agent does, after reading artifacts. A c
 | `map-download` | `pick` a server whose map is **not** in MEMFS | `loading-map` overlay; pk3 appears in `fs`; then match | connect with missing map; overlay never finishes |
 | `mp-2p` | two `--id`s through the same flow on a host that can hold two SwiftShader WASM heaps | both `state.connected`; proxy `connections` ≥ 2; dedicated two `is now playing` and no `dropped (Timed out)`; `status` shows both names | either drops; live-view stills from different clocks; only one `connections` |
 | `net` | `stack netprobe` (local and/or `--addr` of an empty public server); in-match `client netprobe --seconds 8` | `verdict.deficient === false`; proxy overhead a few ms vs direct UDP; engine `packetsReceived` rising; no `sinceLastMessage` > 0.5s | proxy p50 tens of ms above direct; getinfo loss; `/stats` drops; stalled `mtime` / origin teleports |
+| `spikes` | spectate or play a remote server ≥30s under `client spikes --seconds 30` | `verdict.attribution` names one leg (or nothing); `engineMessageGapMaxMs` small; no proxy drops during run | engine starved (>300ms) while attribution is `unattributed`; drops during run; repeated server→proxy gaps on a clean direct-UDP path |
 
 The FakeTCP hop (`stack start --faketcp`) is optional and not part of the base set. It runs [udp2raw](https://github.com/wangyu-/udp2raw) so `connect 127.0.0.1:26001` still looks like UDP to the proxy while the path to `:26000` is FakeTCP. The old length-prefixed `tcp-relay.js` path is an L7 fallback only. Public servers are a product goal; the gated path is local dedicated + proxy.
 

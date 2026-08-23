@@ -320,6 +320,133 @@ function judgeClient(samples, proxyStats) {
 	};
 }
 
+// Lag-spike attribution. samples are rows collected by `client spikes`:
+// {t, state, proxyConn, spy}. Each leg answers a different question:
+//
+//   state.sinceLastMessage / mtime stall  → the engine did not get a snapshot
+//   proxyConn.gapsServerToBrowser         → datagrams stalled before the proxy
+//   spy.rx (browser WebSocket receive)    → frames stalled proxy→browser
+//   spy.tx + maxBufferedAfter             → the page could not flush its sends
+//   fps while all legs clean              → renderer, not the bridge
+function judgeSpikes(samples) {
+	const reasons = [];
+	const warnings = [];
+	const connected = samples.filter((s) => s && s.state && s.state.connected && s.state.signon >= 4);
+	if (!samples.length) {
+		reasons.push('no spike samples');
+		return { deficient: true, reasons, warnings, n: 0, connected: 0 };
+	}
+	if (!connected.length) {
+		reasons.push('client never reached match; spikes needs an in-game or spectating session');
+		return { deficient: true, reasons, warnings, n: samples.length, connected: 0 };
+	}
+
+	const maxOf = (arr) => arr.reduce((m, x) => (x != null && (m == null || x > m) ? x : m), null);
+
+	const msgGaps = connected.map((s) =>
+		s.state.sinceLastMessage != null ? s.state.sinceLastMessage * 1000 : null).filter((x) => x != null);
+	const fpsVals = connected.map((s) => s.state.fps).filter((x) => typeof x === 'number' && x >= 0);
+	const recv = connected.map((s) => s.state.packetsReceived).filter((x) => typeof x === 'number');
+
+	let mtimeStallMax = 0;
+	for (let i = 1; i < connected.length; i++) {
+		const a = connected[i - 1], b = connected[i];
+		if (typeof a.state.mtime === 'number' && typeof b.state.mtime === 'number' &&
+			typeof a.t === 'number' && typeof b.t === 'number') {
+			const wall = b.t - a.t;
+			const adv = Math.max(b.state.mtime - a.state.mtime, 0);
+			const stall = Math.max(0, wall - adv * 1000 - 150); // server clock may lag wall clock slightly
+			if (stall > mtimeStallMax) mtimeStallMax = stall;
+		}
+	}
+
+	// Worst leg over each sample's trailing window.
+	const srvGapMax = maxOf(connected.map((s) =>
+		s.proxyConn && s.proxyConn.gapsServerToBrowser ? legWorst(s.proxyConn.gapsServerToBrowser) : null));
+	const browserRxGapMax = maxOf(connected.map((s) =>
+		s.spy && s.spy.rx ? s.spy.rx.maxGapMs : null));
+	const browserTxGapMax = maxOf(connected.map((s) =>
+		s.spy && s.spy.tx ? s.spy.tx.maxGapMs : null));
+	const bufferedMax = maxOf(connected.map((s) =>
+		s.spy && s.spy.maxBufferedAfter != null ? s.spy.maxBufferedAfter : null));
+	const proxyBufMax = maxOf(connected.map((s) =>
+		s.proxyConn && s.proxyConn.bufferedAmount != null ? s.proxyConn.bufferedAmount : null));
+	const proxyDropsDelta = (() => {
+		const first = connected[0].proxyConn, last = connected[connected.length - 1].proxyConn;
+		if (!first || !last) return null;
+		const d = (last.wsDrops + last.udpDrops) - (first.wsDrops + first.udpDrops);
+		return d > 0 ? d : 0;
+	})();
+	const dropsRecent = maxOf(connected.map((s) =>
+		s.proxyConn && s.proxyConn.dropsLast10s != null ? s.proxyConn.dropsLast10s : null));
+
+	const engineGapMax = maxOf(msgGaps);
+	const fpsMin = fpsVals.length ? Math.min.apply(null, fpsVals) : null;
+
+	const out = {
+		deficient: false,
+		reasons,
+		warnings,
+		n: samples.length,
+		connected: connected.length,
+		engineMessageGapMaxMs: engineGapMax,
+		mtimeStallMaxMs: Math.round(mtimeStallMax),
+		serverToBrowserGapMaxMs: srvGapMax,
+		browserRxGapMaxMs: browserRxGapMax,
+		browserTxGapMaxMs: browserTxGapMax,
+		spyBufferedMax: bufferedMax,
+		proxyBufferedMax: proxyBufMax,
+		proxyDropsDuringRun: proxyDropsDelta,
+		proxyDropsLast10sPeak: dropsRecent,
+		fpsMin,
+		attribution: [],
+	};
+
+	// Attribute: walk from the server outward and stop at the first leg that
+	// actually saw a gap. A leg that stayed quiet is exonerated.
+	if ((engineGapMax != null && engineGapMax > 300) || mtimeStallMax > 300) {
+		if (srvGapMax != null && srvGapMax > 200)
+			out.attribution.push('server→proxy: dedicated paused ' + srvGapMax + 'ms (proxy saw no datagrams)');
+		else if (browserRxGapMax != null && browserRxGapMax > 200)
+			out.attribution.push('proxy→browser: WS delivery stalled ' + browserRxGapMax + 'ms in-page though the proxy kept receiving');
+		else if (browserTxGapMax != null && browserTxGapMax > 300)
+			out.attribution.push('client tx: page stopped sending for ' + browserTxGapMax + 'ms (main thread wedged)');
+		else if (fpsMin != null && fpsMin < 15)
+			out.attribution.push('engine/render: datagrams flowed but frames took ' + Math.round(1000 / Math.max(fpsMin, 0.01)) + 'ms');
+		else
+			out.attribution.push('unattributed: engine saw ' + Math.round(engineGapMax) + 'ms message gap with every measured leg quiet');
+	}
+
+	if (out.attribution.length) {
+		reasons.push(out.attribution.join('; '));
+	} else if (engineGapMax != null) {
+		warnings.push('no >300ms engine gap this run (worst ' + Math.round(engineGapMax) + 'ms)');
+	}
+	if (srvGapMax != null && srvGapMax <= 200 && engineGapMax != null && engineGapMax <= 300 && fpsMin != null && fpsMin < 15)
+		warnings.push('fps dipped to ' + Math.round(fpsMin) + ' with clean net — renderer-side hitch');
+	if (proxyDropsDelta > 0)
+		reasons.push('proxy dropped ' + proxyDropsDelta + ' datagrams during the run (bufferedAmount backpressure)');
+	if (proxyBufMax != null && proxyBufMax > 32 * 1024)
+		reasons.push('proxy→browser bufferedAmount peaked at ' + proxyBufMax + ' bytes');
+	if (bufferedMax != null && bufferedMax > 64 * 1024)
+		warnings.push('browser ws.send bufferedAmount peaked at ' + bufferedMax + ' bytes');
+	if (recv.length >= 2 && recv[recv.length - 1] <= recv[0])
+		reasons.push('packetsReceived did not increase (' + recv[0] + ' → ' + recv[recv.length - 1] + ')');
+	out.deficient = reasons.length > 0;
+	return out;
+}
+
+function legWorst(windows) {
+	if (!windows) return null;
+	const vals = [];
+	for (const key of Object.keys(windows)) {
+		const w = windows[key];
+		if (w && w.maxGapMs != null) vals.push(w.maxGapMs);
+	}
+	if (!vals.length) return null;
+	return Math.max.apply(null, vals);
+}
+
 module.exports = {
 	parseHostPort,
 	summarize,
@@ -327,4 +454,5 @@ module.exports = {
 	probeViaProxy,
 	judgeBridge,
 	judgeClient,
+	judgeSpikes,
 };
