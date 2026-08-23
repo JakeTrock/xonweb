@@ -12,11 +12,11 @@
  *   WebSocket binary messages → UDP datagrams to target
  *   UDP datagrams from target → WebSocket binary messages
  * 
- * TCP bridge mode:
+ * TCP bridge mode (L7 fallback; prefer udp2raw/hop.js FakeTCP):
  *   ws://proxy:8081/?target=game.example.com:9260&proto=tcp
  *   WebSocket binary messages → length-prefixed TCP frames to target
  *   Length-prefixed TCP frames from target → WebSocket binary messages
- *   Use with tcp-relay.js on the remote server to bridge to a local UDP game server.
+ *   Use with tcp-relay.js only when a middlebox requires a real TCP stream.
  */
 
 const dgram = require('dgram');
@@ -148,69 +148,151 @@ function queryServerInfo(ip, port) {
 	});
 }
 
-async function handleServerList(req, res) {
-	try {
-		// 1. Resolve all master server hostnames
-		const masterIPs = [];
-		for (const ms of MASTER_SERVERS) {
-			const ip = await resolveHost(ms.host);
-			if (ip) masterIPs.push({ ip, port: ms.port, name: ms.host });
+// A full /slist sweep takes ~13s (6 masters + ~150 getinfo). Cache the
+// result briefly so repeat loads (and tunnel clients that give up early)
+// do not re-hammer every master and server. ?refresh=1 forces a rebuild.
+const SLIST_TTL_MS = 60 * 1000;
+const slistCache = { at: 0, body: null };
+let slistInflight = null;
+
+function serveJson(res, code, obj) {
+	res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+	res.end(JSON.stringify(obj));
+}
+
+async function buildServerList() {
+	// 1. Resolve all master server hostnames
+	const masterIPs = [];
+	for (const ms of MASTER_SERVERS) {
+		const ip = await resolveHost(ms.host);
+		if (ip) masterIPs.push({ ip, port: ms.port, name: ms.host });
+	}
+
+	if (masterIPs.length === 0)
+		return { servers: [], error: 'No master servers resolved' };
+
+	// 2. Query all master servers in parallel
+	const masterResults = await Promise.all(masterIPs.map(ms => queryMasterServer(ms.ip, ms.port)));
+
+	// 3. Deduplicate server list
+	const serverMap = new Map();
+	for (const servers of masterResults) {
+		for (const s of servers) {
+			const key = s.ip + ':' + s.port;
+			if (!serverMap.has(key)) serverMap.set(key, s);
 		}
-		
-		if (masterIPs.length === 0) {
-			res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-			res.end(JSON.stringify({ servers: [], error: 'No master servers resolved' }));
+	}
+
+	// 4. Query info from each server (in parallel, but limit concurrency)
+	const serverList = Array.from(serverMap.values());
+	const BATCH_SIZE = 50;
+	const results = [];
+
+	for (let i = 0; i < serverList.length; i += BATCH_SIZE) {
+		const batch = serverList.slice(i, i + BATCH_SIZE);
+		const infos = await Promise.all(batch.map(s => queryServerInfo(s.ip, s.port)));
+		for (let j = 0; j < batch.length; j++) {
+			const info = infos[j];
+			if (info && info.hostname) {
+				results.push({
+					ip: batch[j].ip,
+					port: batch[j].port,
+					address: batch[j].ip + ':' + batch[j].port,
+					hostname: info.hostname || 'unnamed',
+					map: info.mapname || 'unknown',
+					players: parseInt(info.clients || '0', 10),
+					maxplayers: parseInt(info.sv_maxclients || '0', 10),
+					ping: info._ping || 0,
+					game: info.game || '',
+					mod: info.mod || '',
+					qcstatus: info.qcstatus || '',
+				});
+			}
+		}
+	}
+
+	// Sort by player count (descending), then by ping (ascending)
+	results.sort((a, b) => b.players - a.players || a.ping - b.ping);
+	return { servers: results, count: results.length };
+}
+
+// Server-Sent Events: push the server list to an open browser so the
+// listing stays fresh without polling. Sends the cached list immediately,
+// then every 15s (also acts as an interim keepalive). A sweep is only
+// triggered when the cache is older than SLIST_TTL_MS; a full sweep takes
+// ~13s, so masters are still hit at most about once a minute.
+const SLIST_STREAM_INTERVAL_MS = 15 * 1000;
+
+function handleServerListStream(req, res) {
+	res.writeHead(200, {
+		'Content-Type': 'text/event-stream',
+		'Cache-Control': 'no-cache, no-transform',
+		Connection: 'keepalive',
+	});
+	let timer = null;
+	let closed = false;
+	const send = () => {
+		if (closed || res.writableEnded) return;
+		const body = slistCache.body || { servers: [], count: 0 };
+		res.write('data: ' + JSON.stringify(Object.assign(
+			{ cachedMs: slistCache.at ? Date.now() - slistCache.at : -1 },
+			body,
+		)) + '\n\n');
+	};
+	const refreshIfNeeded = () => {
+		if (closed || slistInflight) return;
+		const stale = !slistCache.body || Date.now() - slistCache.at >= SLIST_TTL_MS;
+		if (!stale) return;
+		slistInflight = buildServerList()
+			.then((body) => {
+				slistCache.at = Date.now();
+				slistCache.body = body;
+				send();
+			})
+			.catch((err) => { console.warn('[slist-stream] refresh failed:', err.message); })
+			.finally(() => { slistInflight = null; });
+	};
+	req.on('close', () => {
+		closed = true;
+		if (timer) clearInterval(timer);
+	});
+	res.on('close', () => {
+		closed = true;
+		if (timer) clearInterval(timer);
+	});
+	send();
+	refreshIfNeeded();
+	timer = setInterval(() => { send(); refreshIfNeeded(); }, SLIST_STREAM_INTERVAL_MS);
+	timer.unref();
+}
+
+async function handleServerList(req, res) {
+	const parsed = url.parse(req.url, true);
+	const force = parsed.query.refresh === '1';
+	const fresh = slistCache.body && Date.now() - slistCache.at < SLIST_TTL_MS;
+	if (fresh && !force) {
+		serveJson(res, 200, Object.assign({ cachedMs: Date.now() - slistCache.at }, slistCache.body));
+		return;
+	}
+	if (!slistInflight) {
+		slistInflight = buildServerList()
+			.then((body) => {
+				slistCache.at = Date.now();
+				slistCache.body = body;
+				return body;
+			})
+			.finally(() => { slistInflight = null; });
+	}
+	try {
+		const body = await slistInflight;
+		serveJson(res, 200, body);
+	} catch (err) {
+		if (slistCache.body) {
+			// stale beats nothing when masters time out mid-refresh
+			serveJson(res, 200, Object.assign({ staleMs: Date.now() - slistCache.at }, slistCache.body));
 			return;
 		}
-		
-		// 2. Query all master servers in parallel
-		const masterResults = await Promise.all(masterIPs.map(ms => queryMasterServer(ms.ip, ms.port)));
-		
-		// 3. Deduplicate server list
-		const serverMap = new Map();
-		for (const servers of masterResults) {
-			for (const s of servers) {
-				const key = s.ip + ':' + s.port;
-				if (!serverMap.has(key)) serverMap.set(key, s);
-			}
-		}
-		
-		// 4. Query info from each server (in parallel, but limit concurrency)
-		const serverList = Array.from(serverMap.values());
-		const BATCH_SIZE = 50;
-		const results = [];
-		
-		for (let i = 0; i < serverList.length; i += BATCH_SIZE) {
-			const batch = serverList.slice(i, i + BATCH_SIZE);
-			const infos = await Promise.all(batch.map(s => queryServerInfo(s.ip, s.port)));
-			for (let j = 0; j < batch.length; j++) {
-				const info = infos[j];
-				if (info && info.hostname) {
-					results.push({
-						ip: batch[j].ip,
-						port: batch[j].port,
-						address: batch[j].ip + ':' + batch[j].port,
-						hostname: info.hostname || 'unnamed',
-						map: info.mapname || 'unknown',
-						players: parseInt(info.clients || '0', 10),
-						maxplayers: parseInt(info.sv_maxclients || '0', 10),
-						ping: info._ping || 0,
-						game: info.game || '',
-						mod: info.mod || '',
-						qcstatus: info.qcstatus || '',
-					});
-				}
-			}
-		}
-		
-		// Sort by player count (descending), then by ping (ascending)
-		results.sort((a, b) => b.players - a.players || a.ping - b.ping);
-		
-		res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-		res.end(JSON.stringify({ servers: results, count: results.length }));
-	} catch (err) {
-		res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-		res.end(JSON.stringify({ error: err.message }));
+		serveJson(res, 500, { error: err.message });
 	}
 }
 
@@ -246,6 +328,34 @@ const server = http.createServer((req, res) => {
 		handleServerList(req, res);
 		return;
 	}
+
+	if (parsedUrl.pathname === '/slist/stream') {
+		handleServerListStream(req, res);
+		return;
+	}
+
+	if (parsedUrl.pathname === '/stats') {
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify(collectStats()));
+		return;
+	}
+
+	if (parsedUrl.pathname === '/getinfo') {
+		const target = parsedUrl.query.addr || parsedUrl.query.target || '';
+		const parts = String(target).split(':');
+		const host = parts[0];
+		const port = parseInt(parts[1] || '26000', 10);
+		if (!host || isNaN(port)) {
+			res.writeHead(400, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'addr=host:port required' }));
+			return;
+		}
+		queryServerInfo(host, port).then((info) => {
+			res.writeHead(200, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify(info || { error: 'timeout', address: host + ':' + port }));
+		});
+		return;
+	}
 	
 	if (parsedUrl.pathname === '/resolve') {
 		const host = parsedUrl.query.host;
@@ -271,27 +381,189 @@ const server = http.createServer((req, res) => {
 		status: 'ok',
 		service: 'xonotic-ws-proxy',
 		connections: activeConnections.size,
+		drops: totals.wsDrops + totals.udpDrops,
+		uptimeMs: Date.now() - startedAt,
 	}));
 });
 
-const wss = new WebSocket.Server({ server, handleProtocols: (protocols) => {
-	const set = new Set(protocols);
-	if (set.has('binary')) return 'binary';
-	return protocols[0] || false;
-}});
+// Game packets are small and latency-sensitive. permessage-deflate and Nagle
+// turn each datagram into extra CPU + 40ms delayed-ACK stalls.
+const wss = new WebSocket.Server({
+	server,
+	perMessageDeflate: false,
+	maxPayload: 65536,
+	skipUTF8Validation: true,
+	clientTracking: false,
+	handleProtocols: (protocols) => {
+		const set = new Set(protocols);
+		if (set.has('binary')) return 'binary';
+		return protocols[0] || false;
+	},
+});
+
+function hardenTcpSocket(sock) {
+	if (!sock) return;
+	try { sock.setNoDelay(true); } catch (e) { /* ignore */ }
+	try { sock.setKeepAlive(true, 10000); } catch (e) { /* ignore */ }
+	try { sock.setTimeout(0); } catch (e) { /* ignore */ }
+}
+
+server.on('connection', hardenTcpSocket);
+server.timeout = 0;
+server.keepAliveTimeout = 0;
+if (typeof server.headersTimeout === 'number') server.headersTimeout = 0;
+
+function enlargeUdpBuffers(sock) {
+	try { sock.setRecvBufferSize(4 * 1024 * 1024); } catch (e) { /* ignore */ }
+	try { sock.setSendBufferSize(4 * 1024 * 1024); } catch (e) { /* ignore */ }
+}
+
+function ipv4Literal(host) {
+	return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host || '');
+}
 
 // Track active connections
 const activeConnections = new Map();
 let connId = 0;
+const startedAt = Date.now();
+const totals = {
+	wsToUdp: 0,
+	udpToWs: 0,
+	wsBytes: 0,
+	udpBytes: 0,
+	wsDrops: 0,
+	udpDrops: 0,
+};
+
+// Drop rather than queue when the browser is already this far behind.
+// ~128 KiB is a few hundred ms of typical Xonotic traffic; queuing more
+// turns a hitch into multi-second jitter (UDP would have dropped).
+const MAX_WS_BUFFERED = 128 * 1024;
+const WS_PING_MS = 5000;
+
+// Per-connection frame history for lag-spike forensics (GET /stats).
+// One entry per datagram in each direction keeps the attribution question
+// ("was the spike on server→proxy→browser, browser→proxy→server, or a
+// drop?") answerable after the fact without attaching a debugger.
+const CONN_EVENT_RING = 8192;
+const CONN_DROP_RING = 512;
+
+function ewmaUpdate(prev, sample, alpha) {
+	if (prev == null || !isFinite(prev)) return sample;
+	return prev + alpha * (sample - prev);
+}
+
+function noteConnEvent(conn, dir) {
+	const evs = conn.events;
+	evs.push([Date.now(), dir]);
+	if (evs.length > CONN_EVENT_RING) evs.splice(0, evs.length - CONN_EVENT_RING);
+}
+
+function noteConnDrop(conn) {
+	conn.dropEvents.push(Date.now());
+	if (conn.dropEvents.length > CONN_DROP_RING) conn.dropEvents.shift();
+}
+
+// Interarrival stats for one direction inside a trailing window.
+function legGaps(events, dir, windowMs, nowMs) {
+	const times = [];
+	for (let i = events.length - 1; i >= 0; i--) {
+		const ev = events[i];
+		if (ev[1] !== dir) continue;
+		if (nowMs - ev[0] > windowMs) break;
+		times.push(ev[0]);
+	}
+	times.reverse();
+	const gaps = [];
+	for (let i = 1; i < times.length; i++) {
+		const dt = times[i] - times[i - 1];
+		if (dt >= 0 && dt < 60000) gaps.push(dt);
+	}
+	gaps.sort((a, b) => a - b);
+	const n = gaps.length;
+	const at = (q) => (n ? gaps[Math.min(n - 1, Math.floor(q * (n - 1)))] : null);
+	let over50 = 0, over100 = 0, over250 = 0, over1000 = 0;
+	for (const g of gaps) {
+		if (g > 50) over50++;
+		if (g > 100) over100++;
+		if (g > 250) over250++;
+		if (g > 1000) over1000++;
+	}
+	return {
+		windowMs,
+		packets: times.length,
+		maxGapMs: n ? gaps[n - 1] : null,
+		p50GapMs: at(0.5),
+		p95GapMs: at(0.95),
+		over50,
+		over100,
+		over250,
+		over1000,
+	};
+}
+
+function legWindow(events, dir, nowMs) {
+	return {
+		w1s: legGaps(events, dir, 1000, nowMs),
+		w5s: legGaps(events, dir, 5000, nowMs),
+		w10s: legGaps(events, dir, 10000, nowMs),
+	};
+}
+
+function dropsInLast(events, windowMs, nowMs) {
+	let n = 0;
+	for (let i = events.length - 1; i >= 0; i--) {
+		if (nowMs - events[i] > windowMs) break;
+		n++;
+	}
+	return n;
+}
+
+function collectStats() {
+	const conns = [];
+	const nowMs = Date.now();
+	for (const [id, conn] of activeConnections) {
+		conns.push({
+			id,
+			target: conn.target,
+			mode: conn.mode,
+			remoteAddress: conn.remoteAddress,
+			ageMs: nowMs - conn.connectedAt,
+			wsToUdp: conn.stats.wsToUdp,
+			udpToWs: conn.stats.udpToWs,
+			wsBytes: conn.stats.wsBytes,
+			udpBytes: conn.stats.udpBytes,
+			wsDrops: conn.stats.wsDrops,
+			udpDrops: conn.stats.udpDrops,
+			bufferedAmount: conn.ws && conn.ws.bufferedAmount || 0,
+			wsRttMs: conn.stats.wsRttMs,
+			udpInterarrivalMs: conn.stats.udpInterarrivalMs,
+			wsInterarrivalMs: conn.stats.wsInterarrivalMs,
+			// server → proxy → browser leg ('r' = datagrams in from the dedicated)
+			gapsServerToBrowser: legWindow(conn.events, 'r', nowMs),
+			// browser → proxy → server leg ('s' = frames in from the engine)
+			gapsBrowserToServer: legWindow(conn.events, 's', nowMs),
+			dropsLast10s: dropsInLast(conn.dropEvents, 10000, nowMs),
+			dropsLast60s: dropsInLast(conn.dropEvents, 60000, nowMs),
+		});
+	}
+	return {
+		service: 'xonotic-ws-proxy',
+		uptimeMs: Date.now() - startedAt,
+		connections: activeConnections.size,
+		totals: Object.assign({}, totals),
+		conns,
+	};
+}
 
 // --- TCP framing helpers ---
 // 4-byte big-endian length prefix + payload
 
 function writeTcpFrame(socket, data) {
-	const header = Buffer.allocUnsafe(4);
-	header.writeUInt32BE(data.length, 0);
-	socket.write(header);
-	socket.write(data);
+	const frame = Buffer.allocUnsafe(4 + data.length);
+	frame.writeUInt32BE(data.length, 0);
+	data.copy(frame, 4);
+	socket.write(frame);
 }
 
 function createTcpFrameParser(onMessage) {
@@ -313,153 +585,299 @@ function createTcpFrameParser(onMessage) {
 	};
 }
 
+function sendToBrowser(conn, payload) {
+	const ws = conn.ws;
+	if (!ws || ws.readyState !== WebSocket.OPEN) {
+		conn.stats.wsDrops++;
+		totals.wsDrops++;
+		return false;
+	}
+	if (ws.bufferedAmount > MAX_WS_BUFFERED) {
+		conn.stats.wsDrops++;
+		totals.wsDrops++;
+		noteConnDrop(conn);
+		if ((conn.stats.wsDrops % 50) === 1) {
+			console.error(`[Conn ${conn.id}] dropping to browser (bufferedAmount=${ws.bufferedAmount}, drops=${conn.stats.wsDrops})`);
+		}
+		return false;
+	}
+	try {
+		ws.send(payload, { binary: true, compress: false });
+		return true;
+	} catch (err) {
+		conn.stats.wsDrops++;
+		totals.wsDrops++;
+		noteConnDrop(conn);
+		return false;
+	}
+}
+
+function noteInterarrival(conn, now, which) {
+	const prevKey = which === 'udp' ? 'lastUdpAt' : 'lastWsAt';
+	const ewmaKey = which === 'udp' ? 'udpInterarrivalMs' : 'wsInterarrivalMs';
+	const prev = conn.stats[prevKey];
+	if (prev) {
+		const dt = now - prev;
+		if (dt > 0 && dt < 2000)
+			conn.stats[ewmaKey] = ewmaUpdate(conn.stats[ewmaKey], dt, 0.2);
+	}
+	conn.stats[prevKey] = now;
+}
+
+// Log server→browser stalls once per 5s so `stack logs --svc proxy` shows
+// the spikes without flooding (a remote dedicated can burst then pause).
+function logBigGap(conn, now, dir) {
+	if (dir !== 'r') return;
+	const last = conn.stats.lastUdpAt;
+	if (!last || now <= last) return;
+	const dt = now - last;
+	if (dt <= 250 || now - conn.lastGapLogAt < 5000) return;
+	conn.lastGapLogAt = now;
+	console.log(`[Conn ${conn.id}] server→browser gap ${dt}ms after ${conn.stats.udpToWs} packets (target ${conn.target})`);
+}
+
 wss.on('connection', (ws, req) => {
 	const connNum = ++connId;
-	
+
+	hardenTcpSocket(req.socket);
+	hardenTcpSocket(ws._socket);
+
 	// Parse target and protocol from query string
 	const parsedUrl = url.parse(req.url, true);
 	const target = parsedUrl.query.target || DEFAULT_TARGET;
 	const proto = (parsedUrl.query.proto || 'udp').toLowerCase();
 	const useTCP = (proto === 'tcp');
-	
+
 	if (!target) {
 		console.error(`[Conn ${connNum}] No target specified in connection URL`);
 		ws.close(1008, 'No target specified');
 		return;
 	}
-	
-	// Parse target host:port
-	const targetParts = target.split(':');
+
+	// Parse target host:port (IPv4 only)
+	const targetParts = String(target).split(':');
 	const targetHost = targetParts[0];
 	const targetPort = parseInt(targetParts[1] || '26000', 10);
-	
+
 	if (!targetHost || isNaN(targetPort)) {
 		console.error(`[Conn ${connNum}] Invalid target: ${target}`);
 		ws.close(1008, 'Invalid target');
 		return;
 	}
-	
+
 	const modeStr = useTCP ? 'TCP' : 'UDP';
 	console.log(`[Conn ${connNum}] New ${modeStr} connection from ${req.socket.remoteAddress} → ${targetHost}:${targetPort}`);
-	
-	// Buffer for data before WS is ready
-	const dataBuffer = [];
-	let transport = null;
-	
-	if (useTCP) {
-		// --- TCP bridge mode ---
-		transport = net.createConnection(targetPort, targetHost, () => {
-			console.log(`[Conn ${connNum}] TCP connected to ${targetHost}:${targetPort}`);
-			// Flush any buffered data
-			while (dataBuffer.length > 0) {
-				writeTcpFrame(transport, dataBuffer.shift());
-			}
-		});
-		
-		const onTcpMessage = function(payload) {
-			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(payload, { binary: true }, (err) => {
-					if (err) console.error(`[Conn ${connNum}] Error sending to browser: ${err.message}`);
-				});
-			} else {
-				if (dataBuffer.length < 100) dataBuffer.push(payload);
-			}
-		};
-		
-		transport.on('data', createTcpFrameParser(onTcpMessage));
-		
-		transport.on('error', (err) => {
-			console.error(`[Conn ${connNum}] TCP socket error: ${err.message}`);
-		});
-		
-		transport.on('close', () => {
-			console.log(`[Conn ${connNum}] TCP socket closed`);
-		});
-		
-		// WebSocket → TCP
-		ws.on('message', (data, isBinary) => {
-			if (!isBinary) return;
-			if (transport.writable) {
-				writeTcpFrame(transport, Buffer.from(data));
-			}
-		});
-		
-	} else {
-		// --- UDP mode (original) ---
-		transport = dgram.createSocket('udp4');
-		let udpReady = true;
-		
-		transport.on('message', (msg, rinfo) => {
-			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(msg, { binary: true }, (err) => {
-					if (err) console.error(`[Conn ${connNum}] Error sending to browser: ${err.message}`);
-				});
-			} else {
-				if (dataBuffer.length < 100) dataBuffer.push(msg);
-			}
-		});
-		
-		transport.on('error', (err) => {
-			console.error(`[Conn ${connNum}] UDP socket error: ${err.message}`);
-		});
-		
-		transport.on('close', () => {
-			console.log(`[Conn ${connNum}] UDP socket closed`);
-		});
-		
-		// WebSocket → UDP
-		ws.on('message', (data, isBinary) => {
-			if (!isBinary) return;
-			transport.send(data, 0, data.length, targetPort, targetHost, (err) => {
-				if (err) console.error(`[Conn ${connNum}] Error sending UDP: ${err.message}`);
-			});
-		});
-	}
-	
-	// Handle WebSocket open - flush any buffered data
-	if (ws.readyState === WebSocket.OPEN) {
-		while (dataBuffer.length > 0) {
-			const data = dataBuffer.shift();
-			if (useTCP && transport.writable) {
-				writeTcpFrame(transport, data);
-			} else if (!useTCP) {
-				// For UDP, we can't replay easily since dataBuffer stores Buffers not {data,port,host}
-				// This is fine — UDP data arriving before WS open is rare
-			}
-		}
-	}
-	
-	// Handle WebSocket close
-	ws.on('close', (code, reason) => {
-		const reasonStr = reason ? reason.toString() : 'unknown';
-		console.log(`[Conn ${connNum}] WebSocket closed (code: ${code}, reason: ${reasonStr})`);
-		if (useTCP) {
-			transport.destroy();
-		} else {
-			transport.close();
-		}
-		activeConnections.delete(connNum);
-	});
-	
-	// Handle WebSocket error
-	ws.on('error', (err) => {
-		console.error(`[Conn ${connNum}] WebSocket error: ${err.message}`);
-		if (useTCP) {
-			transport.destroy();
-		} else {
-			transport.close();
-		}
-		activeConnections.delete(connNum);
-	});
-	
-	activeConnections.set(connNum, {
+
+	const conn = {
+		id: connNum,
 		ws,
-		transport,
+		transport: null,
 		target: `${targetHost}:${targetPort}`,
 		mode: modeStr,
 		remoteAddress: req.socket.remoteAddress,
-		connectedAt: new Date(),
+		connectedAt: Date.now(),
+		udpDest: { host: targetHost, port: targetPort },
+		pingTimer: null,
+		events: [],
+		dropEvents: [],
+		lastGapLogAt: 0,
+		stats: {
+			wsToUdp: 0,
+			udpToWs: 0,
+			wsBytes: 0,
+			udpBytes: 0,
+			wsDrops: 0,
+			udpDrops: 0,
+			wsRttMs: null,
+			udpInterarrivalMs: null,
+			wsInterarrivalMs: null,
+			lastUdpAt: 0,
+			lastWsAt: 0,
+			lastPingAt: 0,
+		},
+	};
+
+	function closeTransport() {
+		if (!conn.transport) return;
+		try {
+			if (useTCP) conn.transport.destroy();
+			else conn.transport.close();
+		} catch (e) { /* ignore */ }
+		conn.transport = null;
+	}
+
+	function teardown() {
+		if (conn.pingTimer) {
+			clearInterval(conn.pingTimer);
+			conn.pingTimer = null;
+		}
+		closeTransport();
+		activeConnections.delete(connNum);
+	}
+
+	if (useTCP) {
+		const transport = net.createConnection({
+			port: targetPort,
+			host: targetHost,
+			noDelay: true,
+			keepAlive: true,
+		}, () => {
+			hardenTcpSocket(transport);
+			console.log(`[Conn ${connNum}] TCP connected to ${targetHost}:${targetPort}`);
+		});
+		conn.transport = transport;
+
+		transport.on('data', createTcpFrameParser((payload) => {
+			const now = Date.now();
+			noteConnEvent(conn, 'r');
+			logBigGap(conn, now, 'r');
+			noteInterarrival(conn, now, 'udp');
+			if (sendToBrowser(conn, payload)) {
+				conn.stats.udpToWs++;
+				conn.stats.udpBytes += payload.length;
+				totals.udpToWs++;
+				totals.udpBytes += payload.length;
+			}
+		}));
+
+		transport.on('error', (err) => {
+			console.error(`[Conn ${connNum}] TCP socket error: ${err.message}`);
+		});
+
+		transport.on('close', () => {
+			console.log(`[Conn ${connNum}] TCP socket closed`);
+		});
+
+		ws.on('message', (data, isBinary) => {
+			if (!isBinary) return;
+			const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+			noteConnEvent(conn, 's');
+			noteInterarrival(conn, Date.now(), 'ws');
+			conn.stats.wsToUdp++;
+			conn.stats.wsBytes += buf.length;
+			totals.wsToUdp++;
+			totals.wsBytes += buf.length;
+			if (transport.writable) writeTcpFrame(transport, buf);
+			else {
+				conn.stats.udpDrops++;
+				totals.udpDrops++;
+			}
+		});
+	} else {
+		const transport = dgram.createSocket({ type: 'udp4', reuseAddr: false });
+		conn.transport = transport;
+		enlargeUdpBuffers(transport);
+
+		let udpBound = false;
+		const pendingUdp = [];
+
+		const sendUdpNow = (buf) => {
+			try {
+				transport.send(buf, conn.udpDest.port, conn.udpDest.host);
+			} catch (err) {
+				conn.stats.udpDrops++;
+				totals.udpDrops++;
+				if ((conn.stats.udpDrops % 50) === 1)
+					console.error(`[Conn ${connNum}] UDP send error: ${err.message}`);
+			}
+		};
+
+		const sendUdp = (buf) => {
+			if (!udpBound) {
+				if (pendingUdp.length < 16) pendingUdp.push(Buffer.from(buf));
+				else {
+					conn.stats.udpDrops++;
+					totals.udpDrops++;
+				}
+				return;
+			}
+			sendUdpNow(buf);
+		};
+
+		transport.on('message', (msg, rinfo) => {
+			if (rinfo && (rinfo.port !== conn.udpDest.port || rinfo.address !== conn.udpDest.host))
+				return;
+			const now = Date.now();
+			noteConnEvent(conn, 'r');
+			logBigGap(conn, now, 'r');
+			noteInterarrival(conn, now, 'udp');
+			if (sendToBrowser(conn, msg)) {
+				conn.stats.udpToWs++;
+				conn.stats.udpBytes += msg.length;
+				totals.udpToWs++;
+				totals.udpBytes += msg.length;
+			}
+		});
+
+		transport.on('error', (err) => {
+			console.error(`[Conn ${connNum}] UDP socket error: ${err.message}`);
+		});
+
+		transport.on('close', () => {
+			console.log(`[Conn ${connNum}] UDP socket closed`);
+		});
+
+		// Bind immediately so the ephemeral source port is stable. Do not
+		// socket.connect(): a connected UDP socket turns ICMP errors into
+		// 'error' events and can drop replies from the dedicated.
+		const setDestHost = (host) => {
+			conn.udpDest.host = host;
+			conn.target = `${host}:${targetPort}`;
+		};
+		if (ipv4Literal(targetHost))
+			setDestHost(targetHost);
+		else {
+			dns.lookup(targetHost, { family: 4 }, (err, address) => {
+				if (err || !address) {
+					console.error(`[Conn ${connNum}] DNS lookup failed for ${targetHost}: ${err ? err.message : 'no A record'}`);
+					return;
+				}
+				setDestHost(address);
+			});
+		}
+
+		transport.bind(0, () => {
+			udpBound = true;
+			enlargeUdpBuffers(transport);
+			while (pendingUdp.length) sendUdpNow(pendingUdp.shift());
+		});
+
+		ws.on('message', (data, isBinary) => {
+			if (!isBinary) return;
+			const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+			noteConnEvent(conn, 's');
+			noteInterarrival(conn, Date.now(), 'ws');
+			conn.stats.wsToUdp++;
+			conn.stats.wsBytes += buf.length;
+			totals.wsToUdp++;
+			totals.wsBytes += buf.length;
+			sendUdp(buf);
+		});
+	}
+
+	ws.on('pong', () => {
+		if (conn.stats.lastPingAt)
+			conn.stats.wsRttMs = Date.now() - conn.stats.lastPingAt;
 	});
+
+	conn.pingTimer = setInterval(() => {
+		if (ws.readyState !== WebSocket.OPEN) return;
+		conn.stats.lastPingAt = Date.now();
+		try { ws.ping(); } catch (e) { /* ignore */ }
+	}, WS_PING_MS);
+
+	ws.on('close', (code, reason) => {
+		const reasonStr = reason ? reason.toString() : 'unknown';
+		console.log(`[Conn ${connNum}] WebSocket closed (code: ${code}, reason: ${reasonStr})`);
+		teardown();
+	});
+
+	ws.on('error', (err) => {
+		console.error(`[Conn ${connNum}] WebSocket error: ${err.message}`);
+		teardown();
+	});
+
+	activeConnections.set(connNum, conn);
 });
 
 server.listen(PORT, '0.0.0.0', () => {
@@ -468,6 +886,7 @@ server.listen(PORT, '0.0.0.0', () => {
 	console.log(`UDP mode:  ws://localhost:${PORT}/?target=host:port`);
 	console.log(`TCP mode:  ws://localhost:${PORT}/?target=host:port&proto=tcp`);
 	console.log(`Server list: http://localhost:${PORT}/slist`);
+	console.log(`Stats:       http://localhost:${PORT}/stats`);
 	console.log(`DNS resolve: http://localhost:${PORT}/resolve?host=hostname`);
 	console.log(`Press Ctrl+C to stop`);
 });
@@ -477,10 +896,14 @@ process.on('SIGINT', () => {
 	console.log('\nShutting down...');
 	for (const [id, conn] of activeConnections) {
 		conn.ws.close(1001, 'Server shutting down');
+		if (conn.pingTimer) {
+			clearInterval(conn.pingTimer);
+			conn.pingTimer = null;
+		}
 		if (conn.mode === 'TCP') {
-			conn.transport.destroy();
+			if (conn.transport) conn.transport.destroy();
 		} else {
-			conn.transport.close();
+			if (conn.transport) conn.transport.close();
 		}
 	}
 	server.close();
@@ -492,8 +915,9 @@ setInterval(() => {
 	if (activeConnections.size > 0) {
 		console.log(`Active connections: ${activeConnections.size}`);
 		for (const [id, conn] of activeConnections) {
-			const duration = Math.round((new Date() - conn.connectedAt) / 1000);
-			console.log(`  [${id}] ${conn.remoteAddress} → ${conn.target} (${conn.mode}, ${duration}s)`);
+			const duration = Math.round((Date.now() - conn.connectedAt) / 1000);
+			const g = legGaps(conn.events, 'r', 60000, Date.now());
+			console.log(`  [${id}] ${conn.remoteAddress} → ${conn.target} (${conn.mode}, ${duration}s, ws→udp ${conn.stats.wsToUdp}, udp→ws ${conn.stats.udpToWs}, drops ${conn.stats.wsDrops + conn.stats.udpDrops}, buf ${conn.ws.bufferedAmount || 0}, srvGapMax ${g.maxGapMs == null ? '-' : g.maxGapMs + 'ms'} over ${g.packets})`);
 		}
 	}
 }, 60000);

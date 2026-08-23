@@ -23,6 +23,8 @@
 		canvas {
 			display: block;
 			background: #000;
+			width: 100vw !important;
+			height: 100vh !important;
 		}
 
 		/* --- Settings Panel --- */
@@ -111,7 +113,7 @@
 			border-radius: 4px;
 			border: 1px solid #444;
 		}
-		#playBtn {
+		#playBtn, #closeSettingsBtn {
 			display: block;
 			width: 100%;
 			padding: 12px;
@@ -128,6 +130,12 @@
 		}
 		#playBtn:hover { opacity: 0.9; }
 		#playBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+		#closeSettingsBtn {
+			display: none;
+			background: #333;
+			letter-spacing: 1px;
+		}
+		#closeSettingsBtn:hover { background: #555; }
 
 		/* --- Loading Overlay --- */
 		#loadingOverlay {
@@ -178,7 +186,7 @@
 			border: 2px solid #ff6600;
 			border-radius: 8px;
 			padding: 25px;
-			z-index: 210;
+			z-index: 220;
 			display: none;
 			min-width: 420px;
 		}
@@ -247,6 +255,8 @@
 			display: flex;
 			justify-content: space-between;
 			align-items: center;
+			flex-wrap: wrap;
+			gap: 8px;
 		}
 		#serverBrowser h2 .actions { display: flex; gap: 8px; }
 		#serverBrowser h2 button {
@@ -291,6 +301,25 @@
 		#serverList .players { color: #8f8; font-weight: bold; }
 		#serverList .ping { color: #aaa; }
 		#serverList .empty { color: #555; }
+			#serverList th.sortable { cursor: pointer; user-select: none; }
+			#serverList th.sortable:hover { color: #fff; }
+			#serverList th.sortable::after { content: ' \21C5'; font-size: 10px; opacity: 0.4; }
+			#serverList th.sortable.sorted-asc { color: #fff; }
+			#serverList th.sortable.sorted-asc::after { content: ' \2191'; opacity: 1; }
+			#serverList th.sortable.sorted-desc { color: #fff; }
+			#serverList th.sortable.sorted-desc::after { content: ' \2193'; opacity: 1; }
+			.serverBrowserToolbar { margin-bottom: 10px; flex-shrink: 0; }
+			#serverSearch {
+				width: 100%;
+				padding: 8px 12px;
+				background: #0a0a0a;
+				border: 1px solid #333;
+				border-radius: 4px;
+				color: #ccc;
+				font-size: 13px;
+				box-sizing: border-box;
+			}
+			#serverSearch:focus { outline: none; border-color: #ff6600; }
 		#serverBrowserStatus {
 			padding: 8px;
 			color: #888;
@@ -315,28 +344,91 @@
 		#console div { color: #ccc; line-height: 1.4; }
 		#console div.error { color: #ff4444; }
 
-		/* --- Toolbar --- */
+		/* --- Toolbar (gear only) --- */
 		#toolbar {
 			position: absolute;
 			top: 10px; right: 10px;
-			z-index: 200;
+			z-index: 207;
 			display: flex;
 			gap: 8px;
 			pointer-events: auto;
 		}
-		#toolbar button {
-			padding: 8px 16px;
+		#gearBtn {
+			width: 40px;
+			height: 40px;
+			padding: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
 			background: rgba(255, 102, 0, 0.85);
 			border: 1px solid #ff9900;
 			color: #fff;
-			font-size: 13px;
+			border-radius: 6px;
+			cursor: pointer;
+			pointer-events: auto;
+			box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+		}
+		#gearBtn:hover { background: rgba(255, 153, 0, 1); color: #fff; }
+		#gearBtn svg { width: 22px; height: 22px; display: block; }
+
+		/* --- Gear / ESC menu --- */
+		#gameMenuBackdrop {
+			position: absolute;
+			top: 0; left: 0; right: 0; bottom: 0;
+			background: rgba(0, 0, 0, 0.45);
+			z-index: 205;
+			display: none;
+		}
+		#gameMenuBackdrop.show { display: block; }
+		#gameMenu {
+			position: absolute;
+			top: 50%; left: 50%;
+			transform: translate(-50%, -50%);
+			background: #1a1a2e;
+			border: 2px solid #ff6600;
+			border-radius: 8px;
+			padding: 22px 24px;
+			z-index: 206;
+			display: none;
+			min-width: 280px;
+			flex-direction: column;
+			gap: 8px;
+			box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+		}
+		#gameMenu.show { display: flex; }
+		#gameMenu h2 {
+			color: #ff6600;
+			font-size: 18px;
+			margin-bottom: 6px;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+		}
+		#gameMenu h2 .close-x {
+			background: #333;
+			border: none;
+			color: #ccc;
+			width: 28px;
+			height: 28px;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 16px;
+			line-height: 1;
+			padding: 0;
+		}
+		#gameMenu h2 .close-x:hover { background: #555; color: #fff; }
+		#gameMenu button.menu-item {
+			padding: 10px 16px;
+			background: #ff6600;
+			border: none;
+			color: #fff;
+			font-size: 14px;
 			font-weight: bold;
 			border-radius: 4px;
 			cursor: pointer;
-			pointer-events: auto;
-			text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+			text-align: left;
 		}
-		#toolbar button:hover { background: rgba(255, 153, 0, 1); color: #fff; }
+		#gameMenu button.menu-item:hover { background: #ff9900; }
 
 		/* Xonotic color palette (0-15) */
 		.xon-colors {
@@ -442,14 +534,15 @@
 					<div class="settings-row">
 						<label>Quality</label>
 						<select id="quality">
-							<option value="fast">Fast</option>
-							<option value="normal" selected>Normal</option>
+							<option value="fast" selected>Fast</option>
+							<option value="normal">Normal</option>
 							<option value="high">High</option>
 						</select>
 					</div>
 				</div>
 
 				<button id="playBtn">Play</button>
+				<button id="closeSettingsBtn">Close</button>
 			</div>
 		</div>
 
@@ -464,13 +557,13 @@
 
 		<!-- Connect Dialog -->
 		<div id="connectDialog">
-			<h2>Connect to Server</h2>
+			<h2>Direct Connect</h2>
 			<label>Server Address (host:port)</label>
 			<input type="text" id="serverAddress" value="localhost:26000" placeholder="host:port">
 			<label>Connection Mode</label>
 			<select id="connectMode">
-				<option value="udp">WebSocket (UDP)</option>
-				<option value="tcp">TCP Bridge</option>
+				<option value="udp">WebSocket → UDP (default)</option>
+				<option value="tcp">WebSocket → TCP relay (L7 fallback)</option>
 			</select>
 			<label>WS Proxy URL</label>
 			<input type="text" id="wsProxyUrlConnect" value="ws://localhost:8081" placeholder="ws://proxy:port">
@@ -480,12 +573,24 @@
 			</div>
 		</div>
 
-		<!-- Toolbar -->
+		<!-- Toolbar: gear opens the same menu as Esc -->
 		<div id="toolbar" style="display:none;">
-			<button id="browseBtn" title="Browse online servers">Browse</button>
-			<button id="connectMenuBtn" title="Connect to server">Connect</button>
-			<button id="settingsBtn" title="Settings">Settings</button>
-			<button id="consoleBtn" title="Toggle console">Console</button>
+			<button id="gearBtn" title="Menu" aria-label="Menu">
+				<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+					<path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54A.49.49 0 0 0 13.9 2h-3.8a.49.49 0 0 0-.48.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.73 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.6.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.25.42.48.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.12-.56 1.62-.94l2.39.96c.25.1.54 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/>
+				</svg>
+			</button>
+		</div>
+
+		<div id="gameMenuBackdrop"></div>
+		<div id="gameMenu">
+			<h2>
+				<span>Menu</span>
+				<button type="button" class="close-x" id="closeGameMenuBtn" title="Close" aria-label="Close">&times;</button>
+			</h2>
+			<button class="menu-item" id="browseBtn" title="Browse online servers">Browse</button>
+			<button class="menu-item" id="settingsBtn" title="Settings">Settings</button>
+			<button class="menu-item" id="consoleBtn" title="Toggle console">Console</button>
 		</div>
 
 		<!-- Server Browser -->
@@ -493,18 +598,22 @@
 			<h2>
 				<span>Server Browser</span>
 				<div class="actions">
+					<button id="connectMenuBtn" title="Connect to a host:port">Direct Connect</button>
 					<button id="refreshServersBtn">Refresh</button>
 					<button class="cancel" id="closeBrowserBtn">Close</button>
 				</div>
 			</h2>
+			<div class="serverBrowserToolbar">
+				<input type="text" id="serverSearch" placeholder="Search server name or map..." autocomplete="off" oninput="renderServerList()">
+			</div>
 			<div id="serverListContainer">
 				<table id="serverList">
 					<thead>
 						<tr>
-							<th>Server Name</th>
-							<th>Map</th>
-							<th>Players</th>
-							<th>Ping</th>
+							<th data-sort="hostname" class="sortable">Server Name</th>
+							<th data-sort="map" class="sortable">Map</th>
+							<th data-sort="players" class="sortable">Players</th>
+							<th data-sort="ping" class="sortable">Ping</th>
 							<th>Address</th>
 						</tr>
 					</thead>
@@ -515,10 +624,20 @@
 			<div id="serverBrowserStatus">Click Refresh to query online servers</div>
 		</div>
 
+		<!-- Map Download Overlay -->
+		<div id="mapDownloadOverlay" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:2px solid #ff6600;border-radius:8px;padding:30px 40px;z-index:300;display:none;text-align:center;">
+			<h3 id="mapDlTitle" style="color:#ff6600;margin-bottom:15px;">Downloading Map...</h3>
+			<div id="mapDlStatus" style="color:#aaa;font-size:14px;margin-bottom:10px;">Fetching map package...</div>
+			<div style="width:300px;height:8px;background:#0a0a0a;border-radius:4px;overflow:hidden;">
+				<div id="mapDlProgress" style="width:0%;height:100%;background:#ff6600;transition:width 0.3s;"></div>
+			</div>
+		</div>
+
 		<!-- Console -->
 		<div id="console"></div>
 	</div>
 
+	<script src="map-assets.js"></script>
 	<script>
 		// --- Xonotic color palette (0-15) ---
 		var XON_COLORS = [
@@ -575,37 +694,71 @@
 		// --- Engine state ---
 		var engineStarted = false;
 		var menuNavigated = false;
+		var switchingServer = false;
+		var connectSeq = 0;
+
+		function engineExec(cmd) {
+			try {
+				Module.ccall('em_exec', null, ['string'], [cmd]);
+			} catch (e) {
+				console.warn('em_exec failed:', cmd, e && e.message ? e.message : e);
+			}
+		}
+
+		// Leave the current dedicated immediately so a new pick does not keep
+		// the old match running while the next map downloads.
+		function leaveCurrentMatch() {
+			switchingServer = true;
+			engineExec('disconnect');
+		}
+
+		// --- Error notifications ---
+		function showMapError(msg) {
+			var existing = document.getElementById('mapErrorToast');
+			if (existing) existing.remove();
+			var toast = document.createElement('div');
+			toast.id = 'mapErrorToast';
+			toast.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#2a0a0a;border:2px solid #ff3333;border-radius:8px;padding:16px 24px;z-index:500;max-width:80vw;color:#ffaaaa;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.5);cursor:pointer;text-align:center;';
+			toast.innerHTML = '<b style="color:#ff6666;font-size:15px;">Map Loading Error</b><br>' + msg.replace(/\^\d/g, '').substring(0, 200) + '<br><span style="color:#888;font-size:12px;">Click to dismiss</span>';
+			toast.onclick = function() { toast.remove(); };
+			document.body.appendChild(toast);
+			setTimeout(function() { if (toast.parentNode) toast.remove(); }, 15000);
+		}
+		function showDisconnectToast(msg) {
+			var existing = document.getElementById('disconnectToast');
+			if (existing) existing.remove();
+			var toast = document.createElement('div');
+			toast.id = 'disconnectToast';
+			toast.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#1a1a2e;border:2px solid #ff6600;border-radius:8px;padding:12px 20px;z-index:500;max-width:80vw;color:#ff9900;font-size:13px;box-shadow:0 4px 20px rgba(0,0,0,0.5);cursor:pointer;text-align:center;';
+			toast.innerHTML = '<b>Disconnected</b>: ' + msg.replace('Disconnect: ', '').substring(0, 150) + '<br><span style="color:#888;font-size:12px;">Click to dismiss</span>';
+			toast.onclick = function() { toast.remove(); };
+			document.body.appendChild(toast);
+			setTimeout(function() { if (toast.parentNode) toast.remove(); }, 10000);
+		}
 
 		function showClickToPlay() {
 			if (engineStarted) return;
 			engineStarted = true;
 			document.getElementById('loadingOverlay').classList.add('hidden');
 			document.getElementById('toolbar').style.display = 'flex';
+			// Auto-detect WS proxy URL first: same-origin by default (the web
+			// server tunnels WS upgrades to the proxy), so forwarded/tunneled
+			// clients only ever need this one port.
+			(function() {
+				var wsBase = (location.protocol === 'https:' ? 'wss://' : 'ws://') + (location.host || 'localhost:9080');
+				var el1 = document.getElementById('wsProxyUrl');
+				var el2 = document.getElementById('wsProxyUrlConnect');
+				if (el1 && /^ws:\/\/(localhost|127\.0\.0\.1):8081$/.test(el1.value)) el1.value = wsBase;
+				if (el2 && /^ws:\/\/(localhost|127\.0\.0\.1):8081$/.test(el2.value)) el2.value = wsBase;
+			})();
 			// Set WS proxy URL before navigating, so server list queries work
 			var proxyUrl = document.getElementById("wsProxyUrl") ? document.getElementById("wsProxyUrl").value : "ws://localhost:8081";
 			try { Module.ccall("em_exec", null, ["string"], ["em_wss " + proxyUrl + " binary"]); } catch(e) { console.log("em_wss failed:", e.message); }
-			// Auto-navigate to main menu (not in-game server list, which is empty in WASM)
-			if (!menuNavigated && typeof Module.ccall === 'function') {
-				menuNavigated = true;
-				try {
-					Module.ccall('em_exec', null, ['string'], ['menu_cmd nexposee']);
-					console.log('Auto-navigated to main menu');
-				} catch(e) {
-					console.log('Auto-navigate failed, will retry:', e.message);
-					setTimeout(function() {
-						try { Module.ccall('em_exec', null, ['string'], ['menu_cmd nexposee']); } catch(e2) {}
-					}, 2000);
-				}
-			}
-			// Auto-detect WS proxy URL based on current page host
-			(function() {
-				var host = location.hostname || 'localhost';
-				var proxyUrl = 'ws://' + host + ':8081';
-				var el1 = document.getElementById('wsProxyUrl');
-				var el2 = document.getElementById('wsProxyUrlConnect');
-				if (el1) el1.value = proxyUrl;
-				if (el2) el2.value = proxyUrl;
-			})();
+			// Close the built-in C menu and steal Esc from it (HTML gear menu handles Esc)
+			setTimeout(function() {
+				try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch(e) { console.log('togglemenu 0 failed:', e.message); }
+				try { Module.ccall('em_exec', null, ['string'], ['unbind ESCAPE']); } catch(e) { console.log('unbind ESCAPE failed:', e.message); }
+			}, 500);
 			// Auto-open the HTML server browser after a short delay
 			setTimeout(function() {
 				showServerBrowser();
@@ -634,30 +787,69 @@
 			print: function(text) {
 				origLog.call(console, text);
 				addConsoleLine(text, false);
-				if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
+				if (!engineStarted && typeof text === 'string' && (text.indexOf('menu: program loaded') !== -1 || text.indexOf('menu: program is not loaded') !== -1)) {
 					showClickToPlay();
+				}
+				if (typeof text === 'string') {
+					if (text.indexOf('not found in filesystem') !== -1 || text.indexOf('failed to load') !== -1 || text.indexOf('no renderer') !== -1)
+						showMapError(text);
+					if (typeof maybeRecoverMissingMap === 'function')
+						maybeRecoverMissingMap(text);
+					if (typeof handleConnectRejection === 'function')
+						handleConnectRejection(text);
+					if (text.indexOf('Disconnect:') !== -1 && !switchingServer)
+						showDisconnectToast(text);
 				}
 			},
 			printErr: function(text) {
 				origErr.call(console, text);
 				addConsoleLine(text, true);
-				if (!engineStarted && typeof text === 'string' && text.indexOf('menu: program loaded') !== -1) {
+				if (!engineStarted && typeof text === 'string' && (text.indexOf('menu: program loaded') !== -1 || text.indexOf('menu: program is not loaded') !== -1)) {
 					showClickToPlay();
 				}
+				if (typeof text === 'string') {
+					if (text.indexOf('not found in filesystem') !== -1 || text.indexOf('failed to load') !== -1 || text.indexOf('no renderer') !== -1)
+						showMapError(text);
+					if (typeof maybeRecoverMissingMap === 'function')
+						maybeRecoverMissingMap(text);
+					if (typeof handleConnectRejection === 'function')
+						handleConnectRejection(text);
+					if (text.indexOf('Disconnect:') !== -1 && !switchingServer)
+						showDisconnectToast(text);
+				}
 			},
-			
+
 			noInitialRun: true,
 			
 			onEngineReady: function() {
-				console.log('Engine started, waiting for menu QC...');
-				setTimeout(function() {
-					if (!engineStarted) {
-						console.log('Fallback: showing UI after 30s timeout');
-						showClickToPlay();
-					}
-				}, 30000);
+				// forceqmenu 1 skips menu.dat, so "menu: program loaded" never prints.
+				console.log('Engine started, showing UI...');
+				showClickToPlay();
+				applySoftwareGlProfile();
 			},
 		};
+
+		function applySoftwareGlProfile() {
+			try {
+				var canvas = document.getElementById('canvas');
+				if (!canvas) return;
+				var gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+				if (!gl) return;
+				var ext = gl.getExtension('WEBGL_debug_renderer_info');
+				var renderer = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '') : String(gl.getParameter(gl.RENDERER) || '');
+				if (!/SwiftShader|llvmpipe|softpipe|Microsoft Basic Render/i.test(renderer))
+					return;
+				console.log('Software GL (' + renderer + '): disabling realtime lights');
+				if (window.Module && typeof Module.ccall === 'function') {
+					Module.ccall('em_exec', null, ['string'], ['r_shadow_realtime_dlight 0']);
+					Module.ccall('em_exec', null, ['string'], ['r_shadow_realtime_world 0']);
+					Module.ccall('em_exec', null, ['string'], ['r_glsl 0']);
+					Module.ccall('em_exec', null, ['string'], ['cl_decals 0']);
+					Module.ccall('em_exec', null, ['string'], ['r_coronas 0']);
+					Module.ccall('em_exec', null, ['string'], ['r_shadows 0']);
+				}
+			} catch (e) { /* ignore */ }
+		}
 
 		// --- Settings → autoexec.cfg generation ---
 		function generateAutoexec() {
@@ -673,7 +865,7 @@
 			var colorVal = selectedShirt * 16 + selectedPants;
 
 			var qualitySettings = {
-				fast:   'r_shadow_realtime_dlight 0\nr_shadow_realtime_world 0\nr_glsl 0\ncl_decals 0\nr_coronas 0',
+				fast:   'r_shadow_realtime_dlight 0\nr_shadow_realtime_world 0\nr_glsl 0\ncl_decals 0\nr_coronas 0\ngl_picmip 1',
 				normal: 'r_shadow_realtime_dlight 1\nr_shadow_realtime_world 0\nr_glsl 1\ncl_decals 1\nr_coronas 1',
 				high:   'r_shadow_realtime_dlight 1\nr_shadow_realtime_world 1\nr_glsl 1\ncl_decals 1\nr_coronas 1'
 			};
@@ -688,7 +880,8 @@
 				'fov ' + fov + '\n' +
 				'vid_pixelheight ' + resScale + '\n' +
 				qualitySettings[quality] + '\n' +
-				'net_slist_favorites "' + favorites + '"\n';
+				'net_slist_favorites "' + favorites + '"\n' +
+				'unbind ESCAPE\n';
 			
 			return cfg;
 		}
@@ -707,23 +900,156 @@
 			
 			// Load the WASM engine script now (after settings are set)
 			var script = document.createElement('script');
-			script.src = 'darkplaces-wasm.js';
+			script.src = 'darkplaces-wasm.js?boot=' + Date.now();
 			document.body.appendChild(script);
 		});
 
+		// --- Gear / Esc menu ---
+		var gameMenu = document.getElementById('gameMenu');
+		var gameMenuBackdrop = document.getElementById('gameMenuBackdrop');
+
+		// --- Mouse capture vs HTML overlays ---
+		// While any HTML menu overlay is up the engine must not hold relative
+		// mouse (browser pointer lock). The engine alone would keep it: it stays
+		// in key_game behind these overlays, and Emscripten SDL re-grabs a lost
+		// pointer lock on the next canvas mouse event. Forcing `vid_mouse 0`
+		// makes VID_SetMouse drop relative mode entirely (and stops view turning);
+		// `vid_mouse 1` restores capture once every overlay is closed.
+		var mouseCaptureFreed = false;
+		function overlayWantsCursor() {
+			if (gameMenu.classList.contains('show')) return true;
+			if (document.getElementById('connectDialog').classList.contains('show')) return true;
+			if (!document.getElementById('settingsPanel').classList.contains('hidden')) return true;
+			if (document.getElementById('serverBrowser').classList.contains('show')) return true;
+			if (document.getElementById('mapDownloadOverlay').style.display === 'block') return true;
+			if (document.getElementById('console').classList.contains('show')) return true;
+			return false;
+		}
+		function syncMouseCapture() {
+			if (!engineStarted) return;
+			var wantsFree = overlayWantsCursor();
+			if (wantsFree === mouseCaptureFreed) {
+				if (wantsFree) { try { if (document.exitPointerLock) document.exitPointerLock(); } catch (e) {} }
+				return;
+			}
+			try {
+				if (wantsFree) {
+					if (document.exitPointerLock) document.exitPointerLock();
+					Module.ccall('em_exec', null, ['string'], ['vid_mouse 0']);
+				} else {
+					Module.ccall('em_exec', null, ['string'], ['vid_mouse 1']);
+				}
+				mouseCaptureFreed = wantsFree;
+			} catch (e) {}
+		}
+
+		function hideGameMenu() {
+			gameMenu.classList.remove('show');
+			gameMenuBackdrop.classList.remove('show');
+			syncMouseCapture();
+		}
+		function showGameMenu() {
+			hideConnectDialog();
+			var browserEl = document.getElementById('serverBrowser');
+			if (browserEl) browserEl.classList.remove('show');
+			gameMenu.classList.add('show');
+			gameMenuBackdrop.classList.add('show');
+			try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch (e) {}
+			syncMouseCapture();
+		}
+		function toggleGameMenu() {
+			if (gameMenu.classList.contains('show')) hideGameMenu();
+			else showGameMenu();
+		}
+		function hideConnectDialog() {
+			document.getElementById('connectDialog').classList.remove('show');
+			syncMouseCapture();
+		}
+		function showConnectDialog() {
+			document.getElementById('connectDialog').classList.add('show');
+			syncMouseCapture();
+		}
+		function closeSettingsPanel() {
+			document.getElementById('settingsPanel').classList.add('hidden');
+			if (engineStarted) document.getElementById('toolbar').style.display = 'flex';
+			syncMouseCapture();
+		}
+		function openSettingsPanel() {
+			hideGameMenu();
+			document.getElementById('playBtn').style.display = 'none';
+			document.getElementById('closeSettingsBtn').style.display = 'block';
+			if (engineStarted) document.getElementById('toolbar').style.display = 'none';
+			document.getElementById('settingsPanel').classList.remove('hidden');
+			syncMouseCapture();
+		}
+		function swallowEscape(e) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+		}
+		function handleEscape(e) {
+			if (!engineStarted) return;
+			swallowEscape(e);
+			if (e.repeat) return;
+			try { Module.ccall('em_exec', null, ['string'], ['togglemenu 0']); } catch (err) {}
+
+			var connectDialog = document.getElementById('connectDialog');
+			if (connectDialog.classList.contains('show')) {
+				hideConnectDialog();
+				return;
+			}
+			if (!document.getElementById('settingsPanel').classList.contains('hidden')) {
+				closeSettingsPanel();
+				return;
+			}
+			var browserEl = document.getElementById('serverBrowser');
+			if (browserEl && browserEl.classList.contains('show')) {
+				browserEl.classList.remove('show');
+				syncMouseCapture();
+				return;
+			}
+			var mapDl = document.getElementById('mapDownloadOverlay');
+			if (mapDl && mapDl.style.display === 'block') return;
+
+			toggleGameMenu();
+		}
+		['keydown', 'keyup', 'keypress'].forEach(function(evtType) {
+			window.addEventListener(evtType, function(e) {
+				if (e.key === 'Escape' || e.code === 'Escape') {
+					if (evtType === 'keydown') handleEscape(e);
+					else if (engineStarted) swallowEscape(e);
+					return;
+				}
+				if (!engineStarted) return;
+				var tag = (e.target && e.target.tagName) || '';
+				if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+				var block = gameMenu.classList.contains('show') ||
+					document.getElementById('connectDialog').classList.contains('show') ||
+					!document.getElementById('settingsPanel').classList.contains('hidden');
+				if (!block) return;
+				e.preventDefault();
+				e.stopImmediatePropagation();
+			}, true);
+		});
+		document.getElementById('gearBtn').addEventListener('click', function(e) {
+			e.stopPropagation();
+			toggleGameMenu();
+		});
+		document.getElementById('closeGameMenuBtn').addEventListener('click', hideGameMenu);
+		gameMenuBackdrop.addEventListener('click', hideGameMenu);
+
 		// --- Connect dialog ---
 		document.getElementById('connectMenuBtn').addEventListener('click', function() {
-			document.getElementById('connectDialog').classList.add('show');
+			showConnectDialog();
 		});
 		document.getElementById('cancelConnectBtn').addEventListener('click', function() {
-			document.getElementById('connectDialog').classList.remove('show');
+			hideConnectDialog();
 		});
 		document.getElementById('connectBtn').addEventListener('click', function() {
 			var addr = document.getElementById('serverAddress').value;
 			var mode = document.getElementById('connectMode').value;
 			var proxyUrl = document.getElementById('wsProxyUrlConnect').value;
 			
-			document.getElementById('connectDialog').classList.remove('show');
+			hideConnectDialog();
 			
 			if (mode === 'tcp') {
 				proxyUrl += (proxyUrl.indexOf('?') !== -1 ? '&proto=tcp' : '?proto=tcp');
@@ -731,21 +1057,12 @@
 			
 			console.log('Setting WS proxy: ' + proxyUrl);
 			console.log('Connecting to: ' + addr);
-			
-			try {
-				Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
-				setTimeout(function() {
-					Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
-				}, 500);
-			} catch(e) {
-				console.error('Connect failed:', e);
-			}
+			connectToServer(addr, 'unknown', proxyUrl);
 		});
 
-		// --- Settings button (re-open settings panel) ---
-		document.getElementById('settingsBtn').addEventListener('click', function() {
-			document.getElementById('settingsPanel').classList.remove('hidden');
-		});
+		// --- Settings (re-open panel from the gear menu) ---
+		document.getElementById('settingsBtn').addEventListener('click', openSettingsPanel);
+		document.getElementById('closeSettingsBtn').addEventListener('click', closeSettingsPanel);
 
 		// --- Server Browser ---
 		var serverBrowser = document.getElementById('serverBrowser');
@@ -758,100 +1075,551 @@
 			return wsUrl.replace(/^ws/, 'http');
 		}
 
+		// --- Server list SSE stream ---
+		// While the browser overlay is open, /slist/stream pushes the list
+		// periodically so ping/player/map columns stay current without the
+		// player hitting Refresh.
+		var slistStream = null;
+		var lastServersJson = '';
+		function startServerListStream() {
+			if (slistStream || typeof EventSource === 'undefined') return;
+			try {
+				slistStream = new EventSource('/slist/stream');
+			} catch (e) { return; }
+			slistStream.onmessage = function(ev) {
+				var data;
+				try { data = JSON.parse(ev.data); } catch (e) { return; }
+				if (!data || !data.servers) return;
+				var json = JSON.stringify(data.servers);
+				if (json === lastServersJson) return; // avoid rebuilding rows under the cursor
+				lastServersJson = json;
+				allServers = data.servers;
+				renderServerList();
+			};
+			slistStream.onerror = function() { /* EventSource retries on its own */ };
+		}
+		function stopServerListStream() {
+			if (!slistStream) return;
+			try { slistStream.close(); } catch (e) { /* already closed */ }
+			slistStream = null;
+			lastServersJson = '';
+		}
+		function hideServerBrowser() {
+			serverBrowser.classList.remove('show');
+			stopServerListStream();
+		}
+
 		function showServerBrowser() {
+			hideGameMenu();
+			hideConnectDialog();
 			serverBrowser.classList.add('show');
+			syncMouseCapture();
+			startServerListStream();
 			if (serverListBody.children.length === 0) {
 				refreshServerList();
 			}
 		}
 
-		function refreshServerList() {
-			var httpUrl = getProxyHttpUrl();
-			serverBrowserStatus.textContent = 'Querying master servers...';
-			serverListBody.innerHTML = '';
+		var allServers = [];
+			var sortColumn = 'ping';
+			var sortDir = 'asc';
 
-			fetch(httpUrl + '/slist')
-				.then(function(r) { return r.json(); })
-				.then(function(data) {
-					if (data.error) {
-						serverBrowserStatus.textContent = 'Error: ' + data.error;
-						return;
+			function refreshServerList() {
+				// Same-origin: the web server proxies to the WS proxy's /slist.
+				// Clients that can only reach :9080 (tunnels) cannot fetch the
+				// proxy's :8081 directly.
+				serverBrowserStatus.textContent = 'Querying master servers...';
+				serverListBody.innerHTML = '';
+
+				fetch('/slist')
+					.then(function(r) { return r.json(); })
+					.then(function(data) {
+						if (data.error) {
+							serverBrowserStatus.textContent = 'Error: ' + data.error;
+							return;
+						}
+						allServers = data.servers || [];
+						lastServersJson = JSON.stringify(allServers);
+						renderServerList();
+
+						if (allServers.length === 0) {
+							serverBrowserStatus.textContent = 'No servers found. Make sure the WS proxy is running.';
+						}
+					})
+					.catch(function(err) {
+						serverBrowserStatus.textContent = 'Failed to fetch server list: ' + err.message;
+					});
+			}
+
+			function renderServerList() {
+				serverListBody.innerHTML = '';
+
+				var searchQuery = (document.getElementById('serverSearch').value || '').toLowerCase();
+
+				var filtered = allServers.filter(function(s) {
+					if (!searchQuery) return true;
+					return (s.hostname && s.hostname.toLowerCase().indexOf(searchQuery) !== -1) ||
+					       (s.map && s.map.toLowerCase().indexOf(searchQuery) !== -1);
+				});
+
+				filtered.sort(function(a, b) {
+					var va, vb;
+					if (sortColumn === 'ping') {
+						va = a.ping || 9999;
+						vb = b.ping || 9999;
+					} else if (sortColumn === 'players') {
+						va = a.players || 0;
+						vb = b.players || 0;
+					} else {
+						va = (a[sortColumn] || '').toLowerCase();
+						vb = (b[sortColumn] || '').toLowerCase();
 					}
-					var servers = data.servers || [];
-					serverBrowserStatus.textContent = servers.length + ' servers found' +
-						(data.count ? ' (' + data.count + ' total)' : '');
+					if (va < vb) return sortDir === 'asc' ? -1 : 1;
+					if (va > vb) return sortDir === 'asc' ? 1 : -1;
+					return 0;
+				});
 
-					servers.forEach(function(s) {
-						var tr = document.createElement('tr');
-						tr.dataset.address = s.address;
+				serverBrowserStatus.textContent = filtered.length + ' servers' +
+					(allServers.length !== filtered.length ? ' (of ' + allServers.length + ')' : '');
 
-						var nameTd = document.createElement('td');
-						nameTd.textContent = s.hostname;
+				filtered.forEach(function(s) {
+					var tr = document.createElement('tr');
+					tr.dataset.address = s.address;
+					tr.dataset.map = s.map;
 
-						var mapTd = document.createElement('td');
-						mapTd.textContent = s.map;
+					var nameTd = document.createElement('td');
+					nameTd.textContent = s.hostname;
 
-						var playersTd = document.createElement('td');
-						var playerStr = s.players + '/' + s.maxplayers;
-						playersTd.textContent = playerStr;
-						playersTd.className = s.players > 0 ? 'players' : 'empty';
+					var mapTd = document.createElement('td');
+					mapTd.textContent = s.map;
 
-						var pingTd = document.createElement('td');
-						pingTd.textContent = s.ping || '-';
-						pingTd.className = 'ping';
+					var playersTd = document.createElement('td');
+					var playerStr = s.players + '/' + s.maxplayers;
+					playersTd.textContent = playerStr;
+					playersTd.className = s.players > 0 ? 'players' : 'empty';
 
-						var addrTd = document.createElement('td');
-						addrTd.textContent = s.address;
+					var pingTd = document.createElement('td');
+					pingTd.textContent = s.ping || '-';
+					pingTd.className = 'ping';
 
-						tr.appendChild(nameTd);
-						tr.appendChild(mapTd);
-						tr.appendChild(playersTd);
-						tr.appendChild(pingTd);
-						tr.appendChild(addrTd);
+					var addrTd = document.createElement('td');
+					addrTd.textContent = s.address;
 
-						tr.addEventListener('click', function() {
-							var addr = this.dataset.address;
-							var proxyUrl = document.getElementById('wsProxyUrl').value || 'ws://localhost:8081';
-							serverBrowser.classList.remove('show');
-							console.log('Connecting to: ' + addr + ' via ' + proxyUrl);
-							try {
-								Module.ccall('em_exec', null, ['string'], ['em_wss ' + proxyUrl + ' binary']);
-								setTimeout(function() {
-									Module.ccall('em_exec', null, ['string'], ['connect ' + addr]);
-								}, 500);
-							} catch(e) {
-								console.error('Connect failed:', e);
-							}
-						});
+					tr.appendChild(nameTd);
+					tr.appendChild(mapTd);
+					tr.appendChild(playersTd);
+					tr.appendChild(pingTd);
+					tr.appendChild(addrTd);
 
-						serverListBody.appendChild(tr);
+					tr.addEventListener('click', function() {
+						var addr = this.dataset.address;
+						var mapName = this.dataset.map;
+						var proxyUrl = document.getElementById('wsProxyUrl').value || 'ws://localhost:8081';
+						hideServerBrowser();
+						syncMouseCapture();
+						connectToServer(addr, mapName, proxyUrl);
 					});
 
-					if (servers.length === 0) {
-						serverBrowserStatus.textContent = 'No servers found. Make sure the WS proxy is running.';
-					}
-				})
-				.catch(function(err) {
-					serverBrowserStatus.textContent = 'Failed to fetch server list: ' + err.message;
+					serverListBody.appendChild(tr);
 				});
-		}
+
+				// Update sort indicators on headers
+				var headers = document.querySelectorAll('#serverList th.sortable');
+				headers.forEach(function(th) {
+					th.classList.remove('sorted-asc', 'sorted-desc');
+					if (th.dataset.sort === sortColumn) {
+						th.classList.add(sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+					}
+				});
+			}
 
 		document.getElementById('browseBtn').addEventListener('click', showServerBrowser);
 		document.getElementById('refreshServersBtn').addEventListener('click', refreshServerList);
 		document.getElementById('closeBrowserBtn').addEventListener('click', function() {
-			serverBrowser.classList.remove('show');
+			hideServerBrowser();
+			syncMouseCapture();
 		});
+
+		// Prevent SDL2/Emscripten keyboard capture when typing in input fields
+		// SDL2 registers keydown/keyup/keypress handlers on window (bubble phase).
+		// We stop propagation in the bubble phase on the input itself so SDL2 never fires.
+		['keydown', 'keyup', 'keypress'].forEach(function(evtType) {
+			document.getElementById('serverSearch').addEventListener(evtType, function(e) {
+				e.stopPropagation();
+			});
+		});
+		// Also guard other input fields in the UI
+		document.querySelectorAll('input[type="text"], input[type="number"], textarea').forEach(function(el) {
+			if (el.id === 'serverSearch') return; // already handled
+			['keydown', 'keyup', 'keypress'].forEach(function(evtType) {
+				el.addEventListener(evtType, function(e) { e.stopPropagation(); });
+			});
+		});
+
+		// Sortable column headers
+		document.querySelectorAll('#serverList th.sortable').forEach(function(th) {
+			th.addEventListener('click', function() {
+				var col = this.dataset.sort;
+				if (sortColumn === col) {
+					sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+				} else {
+					sortColumn = col;
+					sortDir = 'asc';
+				}
+				renderServerList();
+			});
+		});
+
+		// --- Map Download & Connect ---
+		var mapDlOverlay = document.getElementById('mapDownloadOverlay');
+		var mapDlStatus = document.getElementById('mapDlStatus');
+		var mapDlProgress = document.getElementById('mapDlProgress');
+		var mapDlTitle = document.getElementById('mapDlTitle');
+
+		var lastConnectAddr = null;
+		var lastProxyUrl = null;
+		var mapRecoverBusy = false;
+		var mapRecoverFailed = {};
+
+		function rescanFs() {
+			engineExec('fs_rescan');
+			console.log('fs_rescan after map/texture prefetch');
+		}
+
+		function prefetchThen(mapName) {
+			if (!window.xonMapAssets || typeof window.xonMapAssets.prefetch !== 'function') {
+				console.warn('map-assets.js not loaded; skipping texture prefetch');
+				return Promise.resolve();
+			}
+			var timedOut = false;
+			var settled = false;
+			var p = window.xonMapAssets.prefetch(mapName, function(info) {
+				if (timedOut) return;
+				mapDlTitle.textContent = 'Loading textures: ' + mapName;
+				mapDlStatus.textContent = info.status || 'Downloading textures...';
+				mapDlProgress.style.width = (info.percent || 0) + '%';
+			}).then(function (stats) {
+				settled = true;
+				return stats;
+			});
+			p.then(function () {
+				if (!timedOut) return;
+				try { engineExec('fs_rescan'); } catch (e) { /* engine may not be up */ }
+			});
+			return Promise.race([
+				p,
+				new Promise(function (resolve) {
+					setTimeout(function () {
+						if (settled) return resolve();
+						timedOut = true;
+						console.warn('[map-assets] prefetch still running after 15s; connecting anyway');
+						mapDlStatus.textContent = 'Connecting (textures still downloading)…';
+						resolve();
+					}, 15000);
+				}),
+			]);
+		}
+
+		// --- Connect rejections ---
+		// The engine prints "Connect: rejected by <addr>\n<reason>" and stops
+		// retrying (cls.connect_trying = false), which used to leave a dead
+		// screen. A full server now kicks back to the server browser; other
+		// reasons surface as a toast.
+		var rejectReasonPending = false;
+		function handleConnectRejection(text) {
+			if (typeof text !== 'string') return;
+			var reason = null;
+			if (text.indexOf('Connect: rejected by') !== -1) {
+				rejectReasonPending = true;
+				var nl = text.indexOf('\n');
+				reason = nl !== -1 ? text.slice(nl + 1).trim() : '';
+			} else if (rejectReasonPending) {
+				reason = text.trim();
+			}
+			if (reason === null) return;
+			if (!reason) return; // reason arrives on the next printed line
+			rejectReasonPending = false;
+			if (/server is full/i.test(reason)) {
+				mapDlOverlay.style.display = 'none';
+				switchingServer = false;
+				showDisconnectToast('Server is full — returning to server browser');
+				showServerBrowser();
+			} else {
+				showDisconnectToast('Connect rejected: ' + reason);
+			}
+		}
+
+		function doConnect(addr, proxyUrl, seq) {
+			if (seq !== undefined && seq !== connectSeq) return;
+			lastConnectAddr = addr;
+			lastProxyUrl = proxyUrl;
+			rejectReasonPending = false;
+			mapDlOverlay.style.display = 'none';
+			syncMouseCapture();
+			try {
+				engineExec('disconnect');
+				engineExec('em_wss ' + proxyUrl + ' binary');
+				engineExec('connect ' + addr);
+			} catch(e) {
+				console.error('Connect failed:', e);
+			}
+			switchingServer = false;
+		}
+
+		function prepareMapAndConnect(addr, mapName, proxyUrl, seq) {
+			if (seq !== undefined && seq !== connectSeq) return Promise.resolve();
+			mapName = mapName || 'unknown';
+			mapDlTitle.textContent = 'Preparing map: ' + mapName;
+			mapDlStatus.textContent = 'Checking map package...';
+			mapDlProgress.style.width = '0%';
+			mapDlOverlay.style.display = 'block';
+			return downloadMapPk3(mapName, addr).catch(function(err) {
+				console.error('Map download failed, continuing with texture prefetch:', err);
+			}).then(function() {
+				if (seq !== undefined && seq !== connectSeq) return;
+				return prefetchThen(mapName);
+			}).then(function() {
+				if (seq !== undefined && seq !== connectSeq) return;
+				rescanFs();
+				doConnect(addr, proxyUrl, seq);
+			}).catch(function(err) {
+				if (seq !== undefined && seq !== connectSeq) return;
+				console.error('Texture prefetch failed, connecting anyway:', err);
+				rescanFs();
+				doConnect(addr, proxyUrl, seq);
+			});
+		}
+
+		function liveMapName(addr, fallback, proxyUrl) {
+			// Same-origin: web server proxies /getinfo to the WS proxy
+			return fetch('/getinfo?addr=' + encodeURIComponent(addr)).then(function(res) {
+				if (!res.ok) throw new Error('getinfo HTTP ' + res.status);
+				return res.json();
+			}).then(function(info) {
+				if (info && info.mapname) {
+					console.log('Live map for ' + addr + ' is ' + info.mapname + ' (slist said ' + fallback + ', players ' + (info.clients || '?') + ')');
+					return info.mapname;
+				}
+				return fallback;
+			}).catch(function(err) {
+				console.warn('Live getinfo failed, using ' + fallback + ': ' + err.message);
+				return fallback;
+			});
+		}
+
+		function maybeRecoverMissingMap(text) {
+			var m = /Map file 'maps\/([^'/\s]+)\.bsp' not found/i.exec(String(text || ''));
+			if (!m || mapRecoverBusy || !lastConnectAddr) return;
+			var missing = m[1];
+			if (mapRecoverFailed[missing]) return;
+			mapRecoverBusy = true;
+			var seq = ++connectSeq;
+			switchingServer = true;
+			console.log('[map-recover] fetching ' + missing + ' then reconnecting to ' + lastConnectAddr);
+			showMapError('Missing map ' + missing + ' — downloading and reconnecting…');
+			var proxyUrl = lastProxyUrl || (document.getElementById('wsProxyUrl') || {}).value || 'ws://127.0.0.1:8081';
+			var addr = lastConnectAddr;
+			downloadMapPk3(missing, addr).then(function() {
+				if (seq !== connectSeq) return;
+				return prefetchThen(missing);
+			}).then(function() {
+				if (seq !== connectSeq) return;
+				rescanFs();
+				doConnect(addr, proxyUrl, seq);
+			}).catch(function(err) {
+				if (seq !== connectSeq) return;
+				console.error('[map-recover] failed for ' + missing + ':', err);
+				mapRecoverFailed[missing] = true;
+				showMapError('Could not download map ' + missing);
+				switchingServer = false;
+			}).then(function() {
+				mapRecoverBusy = false;
+			});
+		}
+
+		function connectToServer(addr, mapName, proxyUrl) {
+			hideGameMenu();
+			hideConnectDialog();
+			hideServerBrowser();
+			var seq = ++connectSeq;
+			console.log('Connecting to: ' + addr + ' (map: ' + mapName + ') via ' + proxyUrl);
+			mapName = mapName || 'unknown';
+			mapDlTitle.textContent = 'Preparing map: ' + mapName;
+			mapDlStatus.textContent = 'Leaving current match...';
+			mapDlProgress.style.width = '0%';
+			mapDlOverlay.style.display = 'block';
+			lastConnectAddr = addr;
+			lastProxyUrl = proxyUrl;
+			leaveCurrentMatch();
+			syncMouseCapture();
+			mapDlStatus.textContent = 'Checking current server map...';
+			liveMapName(addr, mapName, proxyUrl).then(function(live) {
+				if (seq !== connectSeq) return;
+				return prepareMapAndConnect(addr, live || mapName, proxyUrl, seq);
+			});
+		}
+
+		function writePackToMemfs(filename, buffer) {
+			try { FS.mkdir('/game/xonotic-maps.pk3dir'); } catch (e) { /* exists */ }
+			var stream = FS.open('/game/xonotic-maps.pk3dir/' + filename, 'w');
+			FS.write(stream, buffer, 0, buffer.byteLength);
+			FS.close(stream);
+		}
+
+		function downloadPackCached(url, filename) {
+			if (typeof caches === 'undefined')
+				return Module.downloadPack(url, filename);
+			return caches.open('xon-postboot-v1').then(function(cache) {
+				return cache.match(url).then(function(hit) {
+					if (hit && hit.ok) {
+						return hit.arrayBuffer().then(function(ab) {
+							var buf = new Uint8Array(ab);
+							writePackToMemfs(filename, buf);
+							console.log('[downloadPack] Cache Storage hit ' + url + ' (' + buf.byteLength + ' bytes)');
+							return new Promise(function(resolve) {
+								try {
+									FS.syncfs(false, function(err) {
+										if (err) console.warn('[downloadPack] IDBFS sync failed:', err);
+										resolve();
+									});
+								} catch (e) { resolve(); }
+							});
+						});
+					}
+					return Module.downloadPack(url, filename).then(function() {
+						return fetch(url, { cache: 'force-cache' }).then(function(res) {
+							if (res && res.ok) return cache.put(url, res);
+						}).catch(function() {});
+					});
+				});
+			});
+		}
+
+		function downloadMapPk3(mapName, serverAddr) {
+			// Check if map already exists in the engine's filesystem
+			// Try common map paths (loose .bsp files)
+			var mapPaths = [
+				'/game/xonotic-maps.pk3dir/maps/' + mapName + '.bsp',
+				'/game/xonotic-data.pk3dir/maps/' + mapName + '.bsp',
+			];
+			for (var i = 0; i < mapPaths.length; i++) {
+				try {
+					if (FS.stat(mapPaths[i]).size > 0) {
+						console.log('Map ' + mapName + ' already exists at ' + mapPaths[i]);
+						return Promise.resolve();
+					}
+				} catch(e) { /* not found */ }
+			}
+
+			// Check if a pk3 for this map is already in xonotic-maps.pk3dir OR xonotic-data.pk3dir
+			var pk3Dirs = ['/game/xonotic-maps.pk3dir', '/game/xonotic-data.pk3dir'];
+			for (var d = 0; d < pk3Dirs.length; d++) {
+				try {
+					var mapFiles = FS.readdir(pk3Dirs[d]);
+					for (var i = 0; i < mapFiles.length; i++) {
+						var fname = mapFiles[i].toLowerCase();
+						if (fname.indexOf('.pk3') !== -1 && fname.indexOf(mapName.toLowerCase()) !== -1) {
+							console.log('Map pk3 already in ' + pk3Dirs[d] + ': ' + mapFiles[i]);
+							return Promise.resolve();
+						}
+					}
+				} catch(e) { /* dir doesn't exist */ }
+			}
+
+			// Show download overlay
+			mapDlTitle.textContent = 'Downloading Map: ' + mapName;
+			mapDlStatus.textContent = 'Searching for map package...';
+			mapDlProgress.style.width = '0%';
+			mapDlOverlay.style.display = 'block';
+
+			function afterPack(filename) {
+				mapDlStatus.textContent = 'Installing map package...';
+				mapDlProgress.style.width = '50%';
+				try {
+					Module.ccall('em_exec', null, ['string'], ['fs_rescan']);
+					console.log('fs_rescan called after downloading ' + filename);
+				} catch(e) { console.warn('fs_rescan failed:', e); }
+			}
+
+			function findLocalHashedPack() {
+				return fetch('/mapfind?name=' + encodeURIComponent(mapName)).then(function(res) {
+					if (!res.ok) throw new Error('mapfind HTTP ' + res.status);
+					return res.json();
+				}).then(function(j) {
+					var files = (j && j.files) || [];
+					if (!files.length) throw new Error('no local pack for ' + mapName);
+					var f = files[0];
+					var filename = f.filename || (f.path && f.path.split('/').pop());
+					mapDlStatus.textContent = 'Installing ' + filename + '...';
+					console.log('Local map pack /game/' + f.path + ' -> xonotic-maps.pk3dir/' + filename);
+					return downloadPackCached('/game/' + f.path, filename).then(function() {
+						afterPack(filename);
+					});
+				});
+			}
+
+			// Official maps are hashed zips under xonotic/data/, not <map>.pk3 on the
+			// community CDN. Try those first; CDN is for extra/community packs.
+			var candidates = [
+				mapName + '.pk3',
+				'cts_' + mapName + '.pk3',
+				mapName.toLowerCase() + '.pk3',
+				'cts_' + mapName.toLowerCase() + '.pk3',
+			];
+
+			function tryNextCandidate(idx) {
+				if (idx >= candidates.length) {
+					return Promise.reject(new Error('Map package not found on CDN'));
+				}
+				var filename = candidates[idx];
+				var url = '/mapdl/' + encodeURIComponent(filename);
+				if (serverAddr) url += '?server=' + encodeURIComponent(serverAddr);
+				mapDlStatus.textContent = 'Trying ' + filename + '...';
+
+				return downloadPackCached(url, filename).then(function() {
+					afterPack(filename);
+				}).catch(function(err) {
+					console.log('Candidate ' + filename + ' failed: ' + err.message);
+					return tryNextCandidate(idx + 1);
+				});
+			}
+
+			return findLocalHashedPack().catch(function(err) {
+				console.log('Local pack miss: ' + err.message);
+				return tryNextCandidate(0);
+			});
+		}
+
+		window.xonUi = {
+			connectToServer: connectToServer,
+			showServerBrowser: showServerBrowser,
+			refreshServerList: refreshServerList,
+			getServers: function () { return allServers.slice(); },
+			showGameMenu: showGameMenu,
+			hideGameMenu: hideGameMenu,
+			toggleGameMenu: toggleGameMenu,
+		};
 
 		// --- Console toggle ---
 		document.getElementById('consoleBtn').addEventListener('click', function() {
+			hideGameMenu();
 			document.getElementById('console').classList.toggle('show');
+			syncMouseCapture();
 		});
 		document.addEventListener('keydown', function(e) {
 			if (e.key === '`' || e.code === 'Backquote') {
 				e.preventDefault();
 				document.getElementById('console').classList.toggle('show');
+				syncMouseCapture();
 			}
 		});
+	</script>
+	<script>
+		if (/(?:^|[?&])harness(?:=|&|$)/.test(location.search)) {
+			var harnessScript = document.createElement('script');
+			harnessScript.src = 'harness-bridge.js';
+			document.body.appendChild(harnessScript);
+		}
 	</script>
 </body>
 </html>

@@ -1,0 +1,723 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const {
+	parseArgs,
+	parseSince,
+	printOut,
+	loadSession,
+	saveSession,
+	clientDir,
+	currentRun,
+	findChrome,
+	spawnLogged,
+	pidAlive,
+	killPid,
+	sleep,
+	ensureDir,
+	CURRENT_DIR,
+	httpGet,
+} = require('./lib/common');
+const { withCdp, waitForCdp, httpGetJson } = require('./lib/cdp');
+const { judgeClient } = require('./lib/netprobe');
+
+function usage() {
+	process.stderr.write(`Usage: test/harness/client <command> [args] [--id a] [--cdp 9222]
+
+Session:   start [--headed] [--cdp] [--view-port] [--play] | stop | urls | ready [--timeout]
+Flow:      play [--name] | phase | wait-phase <settings|loading|browser|loading-map|match>
+           servers | pick <addr|name|map> [--map] [--local]
+Drive:     exec <cmd> | input <+forward> [--seconds] | wait <regex> | eval <js>
+Shots:     shot [name] [--canvas|--page|--ui] | grab [--seconds] [--hz]
+Console:   con [--tail N] [--grep re] [--since 10s] [--stream engine|html|js|all] [--dump]
+FS:        fs ls|tree|stat|cat|find|has|downloads|compare|404s|filelist [path]
+Other:     state | ui | net | gl | cvar <name> | players | netprobe [--seconds] [--hz]
+`);
+}
+
+async function xon(cdp, expr, awaitPromise) {
+	return cdp.evaluate(
+		`(function(){ if (!window.__xon) throw new Error('window.__xon missing — open ?harness=1'); return (${expr}); })()`,
+		awaitPromise
+	);
+}
+
+async function xonCall(cdp, method, args) {
+	const json = JSON.stringify(args || []);
+	const parts = JSON.stringify(method.split('.'));
+	return cdp.evaluate(
+		`(function(){
+			var parts = ${parts};
+			var ctx = window.__xon;
+			var fn = ctx;
+			for (var i = 0; i < parts.length; i++) {
+				if (i === parts.length - 1) ctx = fn;
+				if (!fn) throw new Error('missing ' + parts.slice(0, i + 1).join('.'));
+				fn = fn[parts[i]];
+			}
+			if (typeof fn !== 'function') throw new Error('not a function: ' + parts.join('.'));
+			return fn.apply(ctx, ${json});
+		})()`,
+		true
+	);
+}
+
+async function waitXon(cdp, timeoutMs) {
+	const deadline = Date.now() + timeoutMs;
+	let last = null;
+	while (Date.now() < deadline) {
+		try {
+			const ok = await cdp.evaluate('!!window.__xon', false);
+			if (ok) return;
+		} catch (e) {
+			last = e;
+		}
+		await sleep(250);
+	}
+	throw new Error('window.__xon never appeared' + (last ? ': ' + last.message : ''));
+}
+
+function defaultCdp(id) {
+	const n = String(id || 'a').charCodeAt(0) - 'a'.charCodeAt(0);
+	return 9222 + (n >= 0 ? n : 0);
+}
+
+function defaultView(id) {
+	const n = String(id || 'a').charCodeAt(0) - 'a'.charCodeAt(0);
+	return 9322 + (n >= 0 ? n : 0);
+}
+
+function monitorUrls(session, inspect) {
+	const urls = {
+		live: 'http://127.0.0.1:' + session.viewPort + '/',
+		shot: 'http://127.0.0.1:' + session.viewPort + '/shot.png',
+		devtools: 'http://127.0.0.1:' + session.cdp + '/',
+		json: 'http://127.0.0.1:' + session.cdp + '/json/list',
+	};
+	if (inspect) urls.inspect = inspect;
+	return urls;
+}
+
+function printMonitor(urls) {
+	process.stdout.write('\nMonitor\n');
+	process.stdout.write('  live      ' + urls.live + '\n');
+	process.stdout.write('  frame     ' + urls.shot + '\n');
+	process.stdout.write('  DevTools  ' + urls.devtools + '\n');
+	if (urls.inspect) process.stdout.write('  inspect   ' + urls.inspect + '\n');
+}
+
+async function inspectUrl(cdpPort) {
+	try {
+		const list = await httpGetJson('http://127.0.0.1:' + cdpPort + '/json/list');
+		const page = (list || []).find((t) => t.type === 'page' && /harness/.test(t.url || ''))
+			|| (list || []).find((t) => t.type === 'page')
+			|| (list || [])[0];
+		if (!page) return null;
+		if (page.devtoolsFrontendUrl) {
+			if (/^https?:/i.test(page.devtoolsFrontendUrl)) return page.devtoolsFrontendUrl;
+			return 'http://127.0.0.1:' + cdpPort + page.devtoolsFrontendUrl;
+		}
+		if (page.webSocketDebuggerUrl) {
+			const ws = page.webSocketDebuggerUrl.replace(/^ws:\/\//, '');
+			return 'http://127.0.0.1:' + cdpPort + '/devtools/inspector.html?ws=' + encodeURIComponent(ws);
+		}
+	} catch (e) { /* ignore */ }
+	return null;
+}
+
+function startView(id, cdpPort, viewPort, dir) {
+	const viewScript = path.join(__dirname, 'view');
+	const viewLog = path.join(dir, 'view.log');
+	return spawnLogged(process.execPath, [
+		viewScript,
+		'--id', id,
+		'--cdp', String(cdpPort),
+		'--port', String(viewPort),
+	], viewLog);
+}
+
+async function cmdStart(flags) {
+	const id = flags.id || 'a';
+	const cdpPort = flags.cdp || defaultCdp(id);
+	const runId = currentRun();
+	const dir = clientDir(id, runId);
+	const profile = path.join(CURRENT_DIR, 'chrome-' + id);
+	ensureDir(profile);
+
+	try {
+		const existing = loadSession(id);
+		if (existing && await sessionUsable(existing)) {
+			const inspect = await inspectUrl(existing.cdp);
+			const urls = monitorUrls(existing, inspect);
+			printOut({ reused: true, id, cdp: existing.cdp, view: existing.viewPort, pid: existing.pid, runId: existing.runId, urls });
+			printMonitor(urls);
+			return;
+		}
+	} catch (e) { /* no session */ }
+
+	for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+		try { fs.unlinkSync(path.join(profile, name)); } catch (e) { /* ignore */ }
+	}
+
+	const chrome = findChrome();
+	const args = [
+		flags.headed ? null : '--headless=new',
+		'--remote-debugging-port=' + cdpPort,
+		'--remote-debugging-address=127.0.0.1',
+		'--remote-allow-origins=*',
+		'--user-data-dir=' + profile,
+		'--no-first-run',
+		'--no-default-browser-check',
+		'--disable-sync',
+		'--disable-default-apps',
+		'--disable-dev-shm-usage',
+		'--disable-gpu-sandbox',
+		'--no-sandbox',
+		'--autoplay-policy=no-user-gesture-required',
+		'--ignore-gpu-blocklist',
+		'--enable-webgl',
+		'--enable-unsafe-swiftshader',
+		process.env.DISPLAY ? '--use-gl=angle' : '--use-gl=swiftshader',
+		'--window-size=1280,720',
+		'http://127.0.0.1:9080/?harness=1&ship=1',
+	].filter(Boolean);
+	if (process.getuid && process.getuid() === 0) args.unshift('--no-sandbox');
+
+	const logPath = path.join(dir, 'chrome.log');
+	const child = spawnLogged(chrome, args, logPath);
+	await waitForCdp(cdpPort, 25000);
+	let pid = child.pid;
+	try {
+		const { execFileSync } = require('child_process');
+		const out = execFileSync('pgrep', ['-f', 'remote-debugging-port=' + cdpPort], { encoding: 'utf8' });
+		const pids = out.trim().split('\n').map(Number).filter(Boolean);
+		if (pids.length) pid = pids[pids.length - 1];
+	} catch (e) { /* keep wrapper pid */ }
+	const viewPort = flags.viewPort || defaultView(id);
+	const viewChild = startView(id, cdpPort, viewPort, dir);
+	const inspect = await inspectUrl(cdpPort);
+	const session = {
+		id,
+		cdp: cdpPort,
+		viewPort,
+		viewPid: viewChild.pid,
+		pid,
+		runId,
+		headed: !!flags.headed,
+		chrome,
+		startedAt: new Date().toISOString(),
+	};
+	saveSession(session);
+	await withCdp(cdpPort, async (cdp) => {
+		await waitXon(cdp, 15000);
+		if (flags.play) {
+			await xonCall(cdp, 'play', [{ name: flags.name }]);
+		}
+	});
+	const urls = monitorUrls(session, inspect);
+	printOut({
+		started: true,
+		id,
+		cdp: cdpPort,
+		view: viewPort,
+		pid,
+		runId,
+		log: logPath,
+		phase: flags.play ? 'loading' : 'settings',
+		urls,
+	});
+	printMonitor(urls);
+}
+
+function cmdStop(flags) {
+	const id = flags.id || 'a';
+	let session;
+	try { session = loadSession(id); } catch (e) {
+		printOut({ stopped: false, reason: e.message });
+		return;
+	}
+	killPid(session.pid);
+	killPid(session.viewPid);
+	try { fs.unlinkSync(require('./lib/common').clientSessionFile(id)); } catch (e) { /* ignore */ }
+	printOut({ stopped: true, id, pid: session.pid, viewPid: session.viewPid });
+}
+
+async function cmdUrls(flags) {
+	const session = loadSession(flags.id);
+	const inspect = await inspectUrl(session.cdp);
+	const urls = monitorUrls(session, inspect);
+	printOut({ id: session.id, urls });
+	printMonitor(urls);
+}
+
+async function sessionUsable(session) {
+	try {
+		await waitForCdp(session.cdp, 1500);
+		return true;
+	} catch (e) {
+		return pidAlive(session.pid);
+	}
+}
+
+async function withSession(flags, fn) {
+	const session = loadSession(flags.id);
+	if (!(await sessionUsable(session)))
+		throw new Error('chrome session --id ' + session.id + ' is gone; client start again');
+	return withCdp(session.cdp, async (cdp) => {
+		await waitXon(cdp, 10000);
+		return fn(cdp, session);
+	});
+}
+
+function writeArtifact(session, name, data, encoding) {
+	const dir = clientDir(session.id, session.runId);
+	const file = path.join(dir, name);
+	if (Buffer.isBuffer(data)) fs.writeFileSync(file, data);
+	else fs.writeFileSync(file, data, encoding || 'utf8');
+	return file;
+}
+
+async function canvasClip(cdp) {
+	const box = await cdp.evaluate(`(function(){
+		var c = document.getElementById('canvas');
+		if (!c) return null;
+		var r = c.getBoundingClientRect();
+		return { x: r.x, y: r.y, width: r.width, height: r.height, scale: window.devicePixelRatio || 1 };
+	})()`, false);
+	if (!box || !box.width || !box.height) return null;
+	return { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 };
+}
+
+async function takeShot(cdp, target) {
+	if (target === 'canvas') {
+		const clip = await canvasClip(cdp);
+		if (clip) return cdp.screenshot({ clip });
+		return cdp.screenshot();
+	}
+	if (target === 'ui') {
+		await cdp.evaluate(`(function(){
+			var c = document.getElementById('canvas');
+			if (c) { c.dataset.harnessPrevVis = c.style.visibility; c.style.visibility = 'hidden'; }
+		})()`, false);
+		try {
+			return await cdp.screenshot();
+		} finally {
+			await cdp.evaluate(`(function(){
+				var c = document.getElementById('canvas');
+				if (c) { c.style.visibility = c.dataset.harnessPrevVis || ''; }
+			})()`, false);
+		}
+	}
+	return cdp.screenshot();
+}
+
+function phaseMatches(actual, wanted) {
+	if (!wanted) return false;
+	if (actual === wanted) return true;
+	if (wanted === 'loading' && (actual === 'loading' || actual === 'loading-map' || actual === 'connecting'))
+		return true;
+	return false;
+}
+
+async function cmdReady(flags) {
+	return cmdWaitPhase(flags, 'browser');
+}
+
+async function cmdWaitPhase(flags, wanted) {
+	if (!wanted) throw new Error('wait-phase requires settings|loading|browser|loading-map|connecting|match');
+	const timeout = (flags.timeout || 180) * 1000;
+	const session = loadSession(flags.id);
+	const deadline = Date.now() + timeout;
+	let last = null;
+	while (Date.now() < deadline) {
+		try {
+			const snap = await withCdp(session.cdp, async (cdp) => {
+				await waitXon(cdp, 5000);
+				return {
+					phase: await cdp.evaluate('window.__xon.phase()', false),
+					ui: await cdp.evaluate('window.__xon.ui()', false),
+				};
+			});
+			last = snap.phase;
+			if (phaseMatches(snap.phase, wanted)) {
+				printOut({ phase: snap.phase, wanted: wanted, id: session.id, ui: snap.ui });
+				return;
+			}
+			if (wanted === 'browser' && snap.phase === 'settings')
+				last = 'settings (run client play first)';
+		} catch (e) {
+			last = e.message;
+		}
+		await sleep(1000);
+	}
+	throw new Error('still in phase ' + last + ', wanted ' + wanted + ' after ' + (flags.timeout || 180) + 's');
+}
+
+async function cmdPlay(flags) {
+	await withSession(flags, async (cdp, session) => {
+		const value = await xonCall(cdp, 'play', [{ name: flags.name }]);
+		printOut(Object.assign({ id: session.id }, value));
+	});
+}
+
+async function cmdPhase(flags) {
+	await withSession(flags, async (cdp, session) => {
+		const ui = await cdp.evaluate('window.__xon.ui()', false);
+		writeArtifact(session, 'phase.json', JSON.stringify(ui, null, 2) + '\n');
+		printOut(ui);
+	});
+}
+
+async function cmdServers(flags) {
+	await withSession(flags, async (cdp, session) => {
+		try {
+			await xonCall(cdp, 'refreshServers', []);
+			await sleep(2500);
+		} catch (e) { /* list may already be populated */ }
+		const value = await cdp.evaluate('window.__xon.servers()', false);
+		writeArtifact(session, 'servers.json', JSON.stringify(value, null, 2) + '\n');
+		printOut(value);
+	});
+}
+
+async function cmdPick(flags, query) {
+	if (flags.local && !query) query = '127.0.0.1:26000';
+	if (!query) throw new Error('pick requires an address, hostname, map, or --local');
+	const map = flags.map || '';
+	await withSession(flags, async (cdp, session) => {
+		const value = await cdp.evaluate(
+			`window.__xon.pick(${JSON.stringify(query)}, ${JSON.stringify(map)})`,
+			false
+		);
+		writeArtifact(session, 'pick.json', JSON.stringify(value, null, 2) + '\n');
+		printOut(value);
+	});
+}
+
+async function cmdExec(flags, cmd) {
+	if (!cmd) throw new Error('exec requires a command string');
+	await withSession(flags, async (cdp, session) => {
+		await xonCall(cdp, 'exec', [cmd]);
+		printOut({ exec: cmd, id: session.id });
+	});
+}
+
+async function cmdInput(flags, bind) {
+	if (!bind) throw new Error('input requires a bind (e.g. +forward)');
+	const seconds = flags.seconds == null ? 3 : flags.seconds;
+	const off = bind.charAt(0) === '+' ? '-' + bind.slice(1) : null;
+	await withSession(flags, async (cdp, session) => {
+		await xonCall(cdp, 'exec', [bind]);
+		if (off && seconds > 0) {
+			await sleep(seconds * 1000);
+			await xonCall(cdp, 'exec', [off]);
+		}
+		printOut({ input: bind, seconds, id: session.id });
+	});
+}
+
+function filterCon(lines, flags) {
+	let out = lines || [];
+	const since = parseSince(flags.since);
+	if (since != null) out = out.filter((l) => l.t >= since);
+	if (flags.grep) {
+		const re = new RegExp(flags.grep, 'i');
+		out = out.filter((l) => re.test(l.text));
+	}
+	const tail = flags.tail == null ? 200 : flags.tail;
+	if (tail >= 0 && out.length > tail) out = out.slice(-tail);
+	return out;
+}
+
+function formatLines(lines) {
+	return lines.map((l) => {
+		const t = typeof l.t === 'number' ? l.t.toFixed(1) : '?';
+		const tag = l.err || l.type === 'error' || l.type === 'pageerror' ? 'E' : (l.type || ' ');
+		return `[${t}s ${tag}] ${l.text}`;
+	}).join('\n');
+}
+
+async function cmdCon(flags) {
+	const stream = flags.stream || (flags._all ? 'all' : 'engine');
+	await withSession(flags, async (cdp, session) => {
+		if (flags.dump) {
+			const dump = await cdp.evaluate('window.__xon.conDump()', true);
+			const file = writeArtifact(session, 'condump.txt', dump.text || '');
+			printOut({ dump: dump.path, file, error: dump.error || null, bytes: (dump.text || '').length });
+			if (dump.text) process.stdout.write(dump.text.endsWith('\n') ? dump.text : dump.text + '\n');
+			return;
+		}
+		const streams = stream === 'all' ? ['engine', 'html', 'js'] : [stream];
+		const result = {};
+		for (const s of streams) {
+			const lines = filterCon(await cdp.evaluate(`window.__xon.con.${s}`, false), flags);
+			result[s] = lines;
+			const text = formatLines(lines);
+			writeArtifact(session, 'con-' + s + '.txt', text + (text ? '\n' : ''));
+		}
+		if (streams.length === 1) process.stdout.write(formatLines(result[streams[0]]) + '\n');
+		else printOut(Object.fromEntries(streams.map((s) => [s, formatLines(result[s])])));
+	});
+}
+
+async function cmdWait(flags, pattern) {
+	if (!pattern) throw new Error('wait requires a regex/string');
+	const timeout = (flags.timeout || 60) * 1000;
+	const re = new RegExp(pattern);
+	const stream = flags.stream || 'engine';
+	const session = loadSession(flags.id);
+	const deadline = Date.now() + timeout;
+	while (Date.now() < deadline) {
+		const hit = await withCdp(session.cdp, async (cdp) => {
+			await waitXon(cdp, 5000);
+			const names = stream === 'all' ? ['engine', 'html', 'js'] : [stream];
+			for (const s of names) {
+				const lines = await cdp.evaluate(`window.__xon.con.${s}`, false);
+				const found = (lines || []).find((l) => re.test(l.text));
+				if (found) return { stream: s, line: found };
+			}
+			return null;
+		});
+		if (hit) {
+			printOut({ matched: true, stream: hit.stream, text: hit.line.text, t: hit.line.t });
+			return;
+		}
+		await sleep(400);
+	}
+	throw new Error('timeout waiting for /' + pattern + '/ in ' + stream);
+}
+
+async function cmdShot(flags, name) {
+	const target = flags.target || 'canvas';
+	await withSession(flags, async (cdp, session) => {
+		const buf = await takeShot(cdp, target);
+		const fileName = (name || ('shot-' + Date.now())) + '.png';
+		const file = writeArtifact(session, fileName, buf);
+		printOut({ file, target, bytes: buf.length });
+	});
+}
+
+async function cmdGrab(flags) {
+	const seconds = flags.seconds == null ? 3 : flags.seconds;
+	const hz = flags.hz == null ? 10 : flags.hz;
+	const interval = Math.max(50, Math.round(1000 / hz));
+	const n = Math.max(1, Math.round((seconds * 1000) / interval));
+	await withSession(flags, async (cdp, session) => {
+		const dir = clientDir(session.id, session.runId);
+		const grabDir = ensureDir(path.join(dir, 'grab'));
+		const jsonl = [];
+		for (let i = 0; i < n; i++) {
+			const state = await cdp.evaluate('window.__xon.state()', false);
+			const buf = await takeShot(cdp, 'canvas');
+			const frame = 'frame-' + String(i).padStart(3, '0') + '.png';
+			fs.writeFileSync(path.join(grabDir, frame), buf);
+			jsonl.push({ i, t: Date.now(), file: frame, state });
+			if (i + 1 < n) await sleep(interval);
+		}
+		const listFile = path.join(dir, 'grab.jsonl');
+		fs.writeFileSync(listFile, jsonl.map((o) => JSON.stringify(o)).join('\n') + '\n');
+		printOut({ frames: n, dir: grabDir, jsonl: listFile });
+	});
+}
+
+async function cmdEval(flags, expr) {
+	if (!expr) throw new Error('eval requires a JS expression');
+	await withSession(flags, async (cdp) => {
+		const value = await cdp.evaluate(expr, true);
+		printOut(value);
+	});
+}
+
+async function cmdState(flags) {
+	await withSession(flags, async (cdp, session) => {
+		const state = await cdp.evaluate('window.__xon.state()', false);
+		const file = writeArtifact(session, 'state.json', JSON.stringify(state, null, 2) + '\n');
+		printOut(state);
+		process.stderr.write(file + '\n');
+	});
+}
+
+async function cmdSimple(flags, method, fileName) {
+	await withSession(flags, async (cdp, session) => {
+		const value = await cdp.evaluate(`window.__xon.${method}()`, method === 'fs.downloads');
+		if (fileName) writeArtifact(session, fileName, JSON.stringify(value, null, 2) + '\n');
+		printOut(value);
+	});
+}
+
+async function cmdFs(flags, sub, arg) {
+	await withSession(flags, async (cdp, session) => {
+		let value;
+		switch (sub) {
+		case 'ls':
+			value = await xonCall(cdp, 'fs.ls', [arg || '/game']);
+			break;
+		case 'tree':
+			value = await cdp.evaluate(
+				`window.__xon.fs.tree(${JSON.stringify(arg || '/game')}, ${flags.depth == null ? 2 : flags.depth})`,
+				false
+			);
+			break;
+		case 'stat':
+		case 'has':
+			if (!arg) throw new Error('fs ' + sub + ' requires a path');
+			value = await xonCall(cdp, 'fs.' + sub, [arg]);
+			break;
+		case 'cat': {
+			if (!arg) throw new Error('fs cat requires a path');
+			const max = flags.maxBytes || 256 * 1024;
+			value = await cdp.evaluate(
+				`window.__xon.fs.cat(${JSON.stringify(arg)}, ${max})`,
+				false
+			);
+			if (value && value.text != null) {
+				const file = writeArtifact(session, 'fs-cat.txt', value.text);
+				process.stdout.write(value.text.endsWith('\n') ? value.text : value.text + '\n');
+				process.stderr.write(JSON.stringify({ file, path: value.path, size: value.size, truncated: value.truncated }) + '\n');
+				return;
+			}
+			break;
+		}
+		case 'find':
+			if (!arg) throw new Error('fs find requires a glob');
+			value = await xonCall(cdp, 'fs.find', [arg]);
+			break;
+		case 'downloads':
+			value = await cdp.evaluate('window.__xon.fs.downloads()', false);
+			break;
+		case 'compare':
+			value = await cdp.evaluate('window.__xon.fs.compare()', true);
+			break;
+		case '404s':
+			value = await cdp.evaluate('window.__xon.fs.notFound()', true);
+			break;
+		case 'filelist':
+			value = await cdp.evaluate('window.__xon.fs.filelist()', true);
+			break;
+		default:
+			throw new Error('unknown fs subcommand ' + sub);
+		}
+		writeArtifact(session, 'fs-' + sub + '.json', JSON.stringify(value, null, 2) + '\n');
+		printOut(value);
+	});
+}
+
+async function cmdCvar(flags, name) {
+	if (!name) throw new Error('cvar requires a name');
+	await withSession(flags, async (cdp, session) => {
+		const before = await cdp.evaluate('window.__xon.con.engine.length', false);
+		await xonCall(cdp, 'exec', [name]);
+		await sleep(200);
+		const lines = await cdp.evaluate('window.__xon.con.engine', false);
+		const fresh = (lines || []).slice(before);
+		const re = new RegExp('"' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"\\s+is\\s+"([^"]*)"');
+		let match = null;
+		for (const l of fresh) {
+			const m = l.text.match(re);
+			if (m) { match = { name, value: m[1], line: l.text }; break; }
+		}
+		const out = match || { name, value: null, lines: fresh.map((l) => l.text) };
+		writeArtifact(session, 'cvar-' + name + '.json', JSON.stringify(out, null, 2) + '\n');
+		printOut(out);
+	});
+}
+
+async function cmdNetprobe(flags) {
+	const seconds = flags.seconds == null ? 8 : flags.seconds;
+	const hz = flags.hz == null ? 10 : flags.hz;
+	const interval = Math.max(50, Math.round(1000 / hz));
+	const n = Math.max(2, Math.round((seconds * 1000) / interval));
+	await withSession(flags, async (cdp, session) => {
+		const samples = [];
+		for (let i = 0; i < n; i++) {
+			const state = await cdp.evaluate('window.__xon.state()', false);
+			samples.push({ t: Date.now(), i, state });
+			if (i + 1 < n) await sleep(interval);
+		}
+		let proxyStats = null;
+		try {
+			const r = await httpGet('http://127.0.0.1:8081/stats', 2000);
+			proxyStats = JSON.parse(r.body);
+		} catch (e) {
+			proxyStats = { error: e.message };
+		}
+		const net = await cdp.evaluate('window.__xon.net()', false).catch(() => null);
+		const slim = samples.map((s) => {
+			const st = Object.assign({}, s.state);
+			delete st.ui;
+			return st;
+		});
+		const verdict = judgeClient(slim, proxyStats);
+		const out = {
+			at: new Date().toISOString(),
+			id: session.id,
+			seconds,
+			hz,
+			samples: slim,
+			net,
+			proxyStats,
+			verdict,
+		};
+		const file = writeArtifact(session, 'netprobe.json', JSON.stringify(out, null, 2) + '\n');
+		printOut(out);
+		process.stderr.write(file + '\n');
+	});
+}
+
+async function cmdPlayers(flags) {
+	await withSession(flags, async (cdp, session) => {
+		const before = await cdp.evaluate('window.__xon.con.engine.length', false);
+		await xonCall(cdp, 'exec', ['status']);
+		await sleep(400);
+		const lines = await cdp.evaluate('window.__xon.con.engine', false);
+		const fresh = (lines || []).slice(before);
+		const out = { lines: fresh.map((l) => l.text) };
+		writeArtifact(session, 'players.txt', formatLines(fresh) + '\n');
+		printOut(out);
+	});
+}
+
+async function main() {
+	const { flags, positional } = parseArgs(process.argv.slice(2));
+	const cmd = positional[0];
+	if (!cmd || cmd === 'help' || cmd === '-h') {
+		usage();
+		process.exit(cmd ? 0 : 2);
+	}
+	switch (cmd) {
+	case 'start': await cmdStart(flags); break;
+	case 'stop': cmdStop(flags); break;
+	case 'urls': await cmdUrls(flags); break;
+	case 'ready': await cmdReady(flags); break;
+	case 'play': await cmdPlay(flags); break;
+	case 'phase': await cmdPhase(flags); break;
+	case 'wait-phase': await cmdWaitPhase(flags, positional[1]); break;
+	case 'servers': await cmdServers(flags); break;
+	case 'pick': await cmdPick(flags, positional.slice(1).join(' ')); break;
+	case 'exec': await cmdExec(flags, positional.slice(1).join(' ')); break;
+	case 'input': await cmdInput(flags, positional[1]); break;
+	case 'wait': await cmdWait(flags, positional.slice(1).join(' ')); break;
+	case 'eval': await cmdEval(flags, positional.slice(1).join(' ')); break;
+	case 'shot': await cmdShot(flags, positional[1]); break;
+	case 'grab': await cmdGrab(flags); break;
+	case 'con': await cmdCon(flags); break;
+	case 'log': flags._all = true; flags.stream = flags.stream || 'all'; await cmdCon(flags); break;
+	case 'state': await cmdState(flags); break;
+	case 'ui': await cmdSimple(flags, 'ui', 'ui.json'); break;
+	case 'net': await cmdSimple(flags, 'net', 'net.json'); break;
+	case 'gl': await cmdSimple(flags, 'gl', 'gl.json'); break;
+	case 'fs': await cmdFs(flags, positional[1], positional.slice(2).join(' ') || undefined); break;
+	case 'cvar': await cmdCvar(flags, positional[1]); break;
+	case 'players': await cmdPlayers(flags); break;
+	case 'netprobe': await cmdNetprobe(flags); break;
+	default:
+		throw new Error('unknown command ' + cmd);
+	}
+}
+
+main().catch((err) => {
+	process.stderr.write(err.message + '\n');
+	process.exit(1);
+});

@@ -1,0 +1,5 @@
+udp2raw (https://github.com/wangyu-/udp2raw) is MIT-licensed.
+
+This directory only contains a fetch/run wrapper (`hop.js`). The
+prebuilt binaries are downloaded on demand from GitHub releases
+(tag pinned in hop.js) and are gitignored.

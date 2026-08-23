@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Xonotic TCP-to-UDP Relay
- * 
- * Runs on a remote server alongside the game server. Listens for TCP
- * connections (with length-prefix framing) from the WS proxy and forwards
- * each framed message as a UDP datagram to the local game server, and vice versa.
- * 
- * Architecture:
- *   Browser ←─WS─→ WS Proxy ←─TCP framed─→ tcp-relay.js ←─UDP─→ Game Server
- * 
+ * Xonotic TCP-to-UDP Relay (L7 fallback only)
+ *
+ * Real TCP + 4-byte big-endian length prefix. Retransmits stall the
+ * game (head-of-line). Prefer the FakeTCP hop:
+ *   node ws-proxy/udp2raw/hop.js server|client
+ *
+ * Use this file only when a middlebox requires a real TCP byte stream
+ * (HTTP CONNECT, L7 proxy) and FakeTCP cannot pass.
+ *
+ *   Browser ←WS→ proxy ←TCP framed→ tcp-relay.js ←UDP→ dedicated
+ *
  * Usage: node tcp-relay.js --listen 0.0.0.0:9260 --target 127.0.0.1:26000
- * 
- * Framing protocol: 4-byte big-endian length prefix + payload
  */
 
 const net = require('net');
@@ -39,10 +39,10 @@ for (const arg of args) {
 let connId = 0;
 
 function writeTcpFrame(socket, data) {
-	const header = Buffer.allocUnsafe(4);
-	header.writeUInt32BE(data.length, 0);
-	socket.write(header);
-	socket.write(data);
+	const frame = Buffer.allocUnsafe(4 + data.length);
+	frame.writeUInt32BE(data.length, 0);
+	data.copy(frame, 4);
+	socket.write(frame);
 }
 
 function createTcpFrameParser(onMessage) {
@@ -67,15 +67,22 @@ function createTcpFrameParser(onMessage) {
 const tcpServer = net.createServer((tcpSocket) => {
 	const num = ++connId;
 	console.log(`[Relay ${num}] TCP connection from ${tcpSocket.remoteAddress}:${tcpSocket.remotePort}`);
+	try { tcpSocket.setNoDelay(true); } catch (e) { /* ignore */ }
+	try { tcpSocket.setKeepAlive(true, 10000); } catch (e) { /* ignore */ }
+	try { tcpSocket.setTimeout(0); } catch (e) { /* ignore */ }
 
 	const udpSocket = dgram.createSocket('udp4');
 	let udpTarget = { host: targetHost, port: targetPort };
+	try { udpSocket.setRecvBufferSize(4 * 1024 * 1024); } catch (e) { /* ignore */ }
+	try { udpSocket.setSendBufferSize(4 * 1024 * 1024); } catch (e) { /* ignore */ }
 
 	// TCP → UDP
 	tcpSocket.on('data', createTcpFrameParser((payload) => {
-		udpSocket.send(payload, 0, payload.length, udpTarget.port, udpTarget.host, (err) => {
-			if (err) console.error(`[Relay ${num}] UDP send error: ${err.message}`);
-		});
+		try {
+			udpSocket.send(payload, 0, payload.length, udpTarget.port, udpTarget.host);
+		} catch (err) {
+			console.error(`[Relay ${num}] UDP send error: ${err.message}`);
+		}
 	}));
 
 	// UDP → TCP (framed)

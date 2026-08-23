@@ -24,11 +24,15 @@ xonotic/data/**/menu.dat
 *.so
 *.dylib
 
-# Test / Playwright artifacts
+# Harness artifacts (and leftover probe screenshots)
+test/artifacts/
 test/screenshot*.png
-test/playwright-report/
-test/test-results/
-test/blob-report/
+test/browsers/
+
+# udp2raw prebuilt (fetched by ws-proxy/udp2raw/hop.js)
+ws-proxy/udp2raw/bin/
+ws-proxy/udp2raw/*.tar.gz
+ws-proxy/udp2raw/*.tar.gz.part
 
 # Logs, env, editor
 *.log
