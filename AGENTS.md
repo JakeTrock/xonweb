@@ -46,6 +46,8 @@ Repo root on this machine: the directory that contains this file. Do not hardcod
 
 `xonotic/` is recorded in the parent git as a gitlink (mode `160000`) with its own nested remotes (`darkplaces`, `xonotic-data.pk3dir`, `gmqcc`, …). Do not `git add` the inner tree into the parent. Do not run `./all update` unless the user asked.
 
+Our engine forks live on GitHub: `xonotic/` itself is pushed to `JakeTrock/xonotic`, and inside it **darkplaces is a registered submodule** (`.gitmodules`) pointing at `JakeTrock/darkplaces` — bump that gitlink when the engine tip moves, then bump the outer `xonotic` gitlink here. Upstream remotes are kept under the name `upstream`.
+
 ## Ports
 
 | Service | Port | Start |
