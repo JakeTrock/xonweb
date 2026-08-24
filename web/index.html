@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Xonotic WASM</title>
+	<title>Horixon</title>
 	<style>
 		* { margin: 0; padding: 0; box-sizing: border-box; }
 		body {
@@ -27,6 +27,24 @@
 			height: 100vh !important;
 		}
 
+		/* --- Horixon logo --- */
+		.horixon-logo {
+			display: block;
+			margin: 0 auto;
+		}
+		.horixon-logo .logo-word {
+			font-family: 'Segoe UI', Tahoma, sans-serif;
+			font-weight: 800;
+			fill: #2f9bff;
+			letter-spacing: 4px;
+		}
+		.horixon-logo .logo-arc {
+			fill: none;
+			stroke: #ff6600;
+			stroke-width: 10;
+			stroke-linecap: round;
+		}
+
 		/* --- Settings Panel --- */
 		#settingsPanel {
 			position: absolute;
@@ -36,22 +54,30 @@
 			justify-content: center;
 			align-items: center;
 			z-index: 110;
+			overflow: hidden;
 		}
 		#settingsPanel.hidden { display: none; }
 		#settingsForm {
 			background: rgba(20, 20, 40, 0.9);
 			border: 1px solid #333;
 			border-radius: 12px;
-			padding: 30px 40px;
-			width: 520px;
-			max-height: 90vh;
-			overflow-y: auto;
+			padding: clamp(16px, 3vmin, 40px) clamp(20px, 4vmin, 48px);
+			width: min(96vw, 1100px);
+			transform-origin: center center;
 		}
 		#settingsForm h1 {
-			color: #ff6600;
-			font-size: 28px;
-			margin-bottom: 20px;
+			margin-bottom: clamp(10px, 2vmin, 24px);
 			text-align: center;
+		}
+		#settingsForm h1 .horixon-logo {
+			width: clamp(220px, 36vmin, 420px);
+			height: auto;
+		}
+		.settings-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+			gap: 6px 32px;
+			align-items: start;
 		}
 		.settings-section {
 			margin-bottom: 20px;
@@ -151,11 +177,12 @@
 		}
 		#loadingOverlay.hidden { opacity: 0; pointer-events: none; }
 		#loadingTitle {
-			font-size: 48px;
-			font-weight: bold;
-			color: #ff6600;
-			text-shadow: 0 0 20px rgba(255, 102, 0, 0.5);
 			margin-bottom: 20px;
+		}
+		#loadingTitle .horixon-logo {
+			width: clamp(260px, 44vmin, 520px);
+			height: auto;
+			filter: drop-shadow(0 0 20px rgba(255, 102, 0, 0.35));
 		}
 		#loadingStatus {
 			font-size: 16px;
@@ -396,6 +423,14 @@
 			box-shadow: 0 8px 32px rgba(0,0,0,0.55);
 		}
 		#gameMenu.show { display: flex; }
+		#gameMenu .menu-logo {
+			text-align: center;
+			margin-bottom: 4px;
+		}
+		#gameMenu .menu-logo .horixon-logo {
+			width: 200px;
+			height: auto;
+		}
 		#gameMenu h2 {
 			color: #ff6600;
 			font-size: 18px;
@@ -429,6 +464,11 @@
 			text-align: left;
 		}
 		#gameMenu button.menu-item:hover { background: #ff9900; }
+		#gameMenu button.menu-item.quit {
+			background: #7a1f1f;
+			margin-top: 6px;
+		}
+		#gameMenu button.menu-item.quit:hover { background: #a02828; }
 
 		/* Xonotic color palette (0-15) */
 		.xon-colors {
@@ -454,8 +494,9 @@
 		<!-- Settings Panel (pre-engine) -->
 		<div id="settingsPanel">
 			<div id="settingsForm">
-				<h1>XONOTIC</h1>
+				<h1><svg class="horixon-logo" viewBox="0 0 320 110" role="img" aria-label="Horixon"><path class="logo-arc" d="M 28 40 Q 160 -12 292 40"/><text class="logo-word" x="160" y="92" text-anchor="middle" font-size="48">HORIXON</text></svg></h1>
 
+				<div class="settings-grid">
 				<div class="settings-section">
 					<h3>Player</h3>
 					<div class="settings-row">
@@ -541,6 +582,7 @@
 						</select>
 					</div>
 				</div>
+				</div>
 
 				<button id="playBtn">Play</button>
 				<button id="closeSettingsBtn">Close</button>
@@ -549,7 +591,7 @@
 
 		<!-- Loading Overlay -->
 		<div id="loadingOverlay" class="hidden">
-			<div id="loadingTitle">XONOTIC</div>
+			<div id="loadingTitle"><svg class="horixon-logo" viewBox="0 0 320 110" role="img" aria-label="Horixon"><path class="logo-arc" d="M 28 40 Q 160 -12 292 40"/><text class="logo-word" x="160" y="92" text-anchor="middle" font-size="48">HORIXON</text></svg></div>
 			<div id="loadingStatus">Initializing...</div>
 			<div id="loadingBar">
 				<div id="loadingProgress"></div>
@@ -585,6 +627,7 @@
 
 		<div id="gameMenuBackdrop"></div>
 		<div id="gameMenu">
+			<div class="menu-logo"><svg class="horixon-logo" viewBox="0 0 320 110" role="img" aria-label="Horixon"><path class="logo-arc" d="M 28 40 Q 160 -12 292 40"/><text class="logo-word" x="160" y="92" text-anchor="middle" font-size="48">HORIXON</text></svg></div>
 			<h2>
 				<span>Menu</span>
 				<button type="button" class="close-x" id="closeGameMenuBtn" title="Close" aria-label="Close">&times;</button>
@@ -592,6 +635,7 @@
 			<button class="menu-item" id="browseBtn" title="Browse online servers">Browse</button>
 			<button class="menu-item" id="settingsBtn" title="Settings">Settings</button>
 			<button class="menu-item" id="consoleBtn" title="Toggle console">Console</button>
+			<button class="menu-item quit" id="quitBtn" title="Leave the current server and return to the start screen">Quit to Menu</button>
 		</div>
 
 		<!-- Server Browser -->
@@ -978,13 +1022,39 @@
 			if (engineStarted) document.getElementById('toolbar').style.display = 'flex';
 			syncMouseCapture();
 		}
+		// Scale the init menu to fit the viewport: the form is laid out fluid
+		// (multi-column grid), then transform-scaled down if it still exceeds
+		// the screen — no scrolling box at any window size.
+		function fitSettingsForm() {
+			var panel = document.getElementById('settingsPanel');
+			var form = document.getElementById('settingsForm');
+			if (panel.classList.contains('hidden')) return;
+			form.style.transform = 'none';
+			var availW = window.innerWidth * 0.96;
+			var availH = window.innerHeight * 0.96;
+			var r = form.getBoundingClientRect();
+			if (!r.height) return;
+			var s = Math.min(1, availW / r.width, availH / r.height);
+			if (s < 1) form.style.transform = 'scale(' + s.toFixed(4) + ')';
+		}
+		window.addEventListener('resize', fitSettingsForm);
 		function openSettingsPanel() {
 			hideGameMenu();
 			document.getElementById('playBtn').style.display = 'none';
 			document.getElementById('closeSettingsBtn').style.display = 'block';
 			if (engineStarted) document.getElementById('toolbar').style.display = 'none';
 			document.getElementById('settingsPanel').classList.remove('hidden');
+			fitSettingsForm();
 			syncMouseCapture();
+		}
+		// Leave the current match (if any) and return to the init menu.
+		function quitToMenu() {
+			hideGameMenu();
+			var browserEl = document.getElementById('serverBrowser');
+			if (browserEl) browserEl.classList.remove('show');
+			switchingServer = true;
+			engineExec('disconnect');
+			openSettingsPanel();
 		}
 		function swallowEscape(e) {
 			e.preventDefault();
@@ -1072,6 +1142,11 @@
 		// --- Settings (re-open panel from the gear menu) ---
 		document.getElementById('settingsBtn').addEventListener('click', openSettingsPanel);
 		document.getElementById('closeSettingsBtn').addEventListener('click', closeSettingsPanel);
+		document.getElementById('quitBtn').addEventListener('click', quitToMenu);
+
+		// Fit the init menu as soon as the page is laid out (it is the first
+		// thing a visitor sees; the resize listener covers later changes).
+		fitSettingsForm();
 
 		// --- Server Browser ---
 		var serverBrowser = document.getElementById('serverBrowser');
