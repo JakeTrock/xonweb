@@ -301,13 +301,18 @@
 	function findPk3Paths(mapName) {
 		var needle = String(mapName || '').toLowerCase();
 		var out = [];
+		// Token-boundary match: 'runningmanctf-….pk3' must not be taken for
+		// 'runningman' (wrong BSP -> wrong shaders/sounds prefetched).
+		var token = needle.replace(/[^a-z0-9_-]/g, '');
+		var tokenRe = token ? new RegExp('(^|[^a-z0-9])' + token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])') : null;
 		for (var d = 0; d < GAMEDIRS.length; d++) {
 			var dir = '/game/' + GAMEDIRS[d];
 			var names = readdirSafe(dir);
 			for (var i = 0; i < names.length; i++) {
 				var fn = names[i];
 				if (!/\.pk3$/i.test(fn)) continue;
-				if (needle && fn.toLowerCase().indexOf(needle) === -1) continue;
+				var low = fn.toLowerCase();
+				if (needle && !(tokenRe ? tokenRe.test(low) : low.indexOf(needle) !== -1)) continue;
 				out.push(dir + '/' + fn);
 			}
 		}

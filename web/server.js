@@ -173,6 +173,10 @@ function findLocalMapPk3s(mapName) {
 	const needle = String(mapName || '').trim().toLowerCase();
 	if (!needle || needle === 'unknown' || needle.length > 64) return [];
 	if (!/^[a-z0-9][a-z0-9._-]*$/.test(needle)) return [];
+	// Token-boundary match preferred: 'runningmanctf-….pk3' must not be
+	// returned for 'runningman' when a real runningman pack exists.
+	const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const tokenRe = new RegExp('(^|[^a-z0-9])' + esc + '($|[^a-z0-9])');
 	const dirs = [
 		{ dir: path.join(ASSETS_GAME, 'xonotic-maps.pk3dir'), relBase: 'xonotic-maps.pk3dir' },
 		{ dir: path.join(ASSETS_GAME, 'xonotic-data.pk3dir'), relBase: 'xonotic-data.pk3dir' },
@@ -189,18 +193,25 @@ function findLocalMapPk3s(mapName) {
 		for (let i = 0; i < names.length; i++) {
 			const n = names[i];
 			if (!/\.pk3$/i.test(n)) continue;
-			if (n.toLowerCase().indexOf(needle) === -1) continue;
+			const low = n.toLowerCase();
+			if (low.indexOf(needle) === -1) continue;
 			const rel = spec.relBase ? spec.relBase + '/' + n : n;
 			if (seen.has(rel)) continue;
 			seen.add(rel);
 			try {
 				const st = fs.statSync(path.join(spec.dir, n));
 				if (!st.isFile()) continue;
-				out.push({ path: rel, size: st.size, filename: n });
+				out.push({ path: rel, size: st.size, filename: n, exact: tokenRe.test(low) ? 1 : 0 });
 			} catch (e) { /* skip */ }
 		}
 	}
-	out.sort(function (a, b) { return a.filename.length - b.filename.length; });
+	// Exact token hits win; within a tier, shorter filename first (bare
+	// <map>.pk3 beats hashed variants). Legacy substring hits are kept as a
+	// last tier so odd community names still resolve.
+	out.sort(function (a, b) {
+		if (a.exact !== b.exact) return b.exact - a.exact;
+		return a.filename.length - b.filename.length;
+	});
 	return out;
 }
 

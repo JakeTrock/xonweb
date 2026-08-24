@@ -1683,20 +1683,24 @@
 				} catch(e) { /* not found */ }
 			}
 
-			// Check if a pk3 for this map is already in xonotic-maps.pk3dir OR xonotic-data.pk3dir
-			var pk3Dirs = ['/game/xonotic-maps.pk3dir', '/game/xonotic-data.pk3dir'];
-			for (var d = 0; d < pk3Dirs.length; d++) {
-				try {
-					var mapFiles = FS.readdir(pk3Dirs[d]);
-					for (var i = 0; i < mapFiles.length; i++) {
-						var fname = mapFiles[i].toLowerCase();
-						if (fname.indexOf('.pk3') !== -1 && fname.indexOf(mapName.toLowerCase()) !== -1) {
-							console.log('Map pk3 already in ' + pk3Dirs[d] + ': ' + mapFiles[i]);
-							return Promise.resolve();
-						}
-					}
-				} catch(e) { /* dir doesn't exist */ }
-			}
+		// Check if a pk3 for this map is already in xonotic-maps.pk3dir OR xonotic-data.pk3dir.
+		// Token-boundary match: 'runningmanctf.pk3' must NOT satisfy 'runningman'
+		// (it once skipped the download and the map load failed silently).
+		var pk3Dirs = ['/game/xonotic-maps.pk3dir', '/game/xonotic-data.pk3dir'];
+		var mapToken = mapName.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+		var mapTokenRe = mapToken ? new RegExp('(^|[^a-z0-9])' + mapToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])') : null;
+		for (var d = 0; d < pk3Dirs.length; d++) {
+			try {
+				var mapFiles = FS.readdir(pk3Dirs[d]);
+				for (var i = 0; i < mapFiles.length; i++) {
+					var fname = mapFiles[i].toLowerCase();
+					if (fname.indexOf('.pk3') === -1) continue;
+					if (mapTokenRe && !mapTokenRe.test(fname)) continue;
+					console.log('Map pk3 already in ' + pk3Dirs[d] + ': ' + mapFiles[i]);
+					return Promise.resolve();
+				}
+			} catch(e) { /* dir doesn't exist */ }
+		}
 
 			// Show download overlay
 			mapDlTitle.textContent = 'Downloading Map: ' + mapName;
