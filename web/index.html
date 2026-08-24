@@ -952,9 +952,16 @@
 
 		// --- Play button: write settings and load engine ---
 		document.getElementById('playBtn').addEventListener('click', function() {
+			if (engineStarted) {
+				// Quit-to-Menu re-entry: the WASM engine is already running,
+				// so Play just goes back to the server browser.
+				closeSettingsPanel();
+				showServerBrowser();
+				return;
+			}
 			this.disabled = true;
 			this.textContent = 'Loading...';
-			
+
 			var cfg = generateAutoexec();
 			Module.writeSettings(cfg);
 			
@@ -1063,14 +1070,24 @@
 			fitSettingsForm();
 			syncMouseCapture();
 		}
-		// Leave the current match (if any) and return to the init menu.
+		// Leave the current match (if any) and return to the init menu —
+		// the pristine start screen with the orange Play button, not the
+		// in-engine Close variant.
 		function quitToMenu() {
 			hideGameMenu();
 			var browserEl = document.getElementById('serverBrowser');
 			if (browserEl) browserEl.classList.remove('show');
+			stopServerListStream();
 			switchingServer = true;
 			engineExec('disconnect');
-			openSettingsPanel();
+			document.getElementById('playBtn').style.display = 'block';
+			document.getElementById('playBtn').disabled = false;
+			document.getElementById('playBtn').textContent = 'Play';
+			document.getElementById('closeSettingsBtn').style.display = 'none';
+			if (engineStarted) document.getElementById('toolbar').style.display = 'none';
+			document.getElementById('settingsPanel').classList.remove('hidden');
+			fitSettingsForm();
+			syncMouseCapture();
 		}
 		function swallowEscape(e) {
 			e.preventDefault();
@@ -1180,13 +1197,17 @@
 		// periodically so ping/player/map columns stay current without the
 		// player hitting Refresh.
 		var slistStream = null;
+		var slistWatchdog = null;
 		var lastServersJson = '';
+		var lastSseMessageAt = 0;
 		function startServerListStream() {
 			if (slistStream || typeof EventSource === 'undefined') return;
 			try {
 				slistStream = new EventSource('/slist/stream');
 			} catch (e) { return; }
+			lastSseMessageAt = Date.now();
 			slistStream.onmessage = function(ev) {
+				lastSseMessageAt = Date.now();
 				var data;
 				try { data = JSON.parse(ev.data); } catch (e) { return; }
 				if (!data || !data.servers) return;
@@ -1197,8 +1218,21 @@
 				renderServerList();
 			};
 			slistStream.onerror = function() { /* EventSource retries on its own */ };
+			// Proxied SSE can go zombie: the connection stays OPEN but no data
+			// ever arrives (seen through Cloudflare tunnels on first load).
+			// If nothing arrives for 45s, recycle the stream; if the list is
+			// still empty, also fall back to a one-shot /slist fetch.
+			if (slistWatchdog) clearInterval(slistWatchdog);
+			slistWatchdog = setInterval(function() {
+				if (!slistStream) { if (slistWatchdog) { clearInterval(slistWatchdog); slistWatchdog = null; } return; }
+				if (Date.now() - lastSseMessageAt < 45000) return;
+				stopServerListStream();
+				startServerListStream();
+				if (serverListBody.children.length === 0) refreshServerList();
+			}, 15000);
 		}
 		function stopServerListStream() {
+			if (slistWatchdog) { clearInterval(slistWatchdog); slistWatchdog = null; }
 			if (!slistStream) return;
 			try { slistStream.close(); } catch (e) { /* already closed */ }
 			slistStream = null;
@@ -1224,16 +1258,28 @@
 			var sortColumn = 'ping';
 			var sortDir = 'asc';
 
-			function refreshServerList() {
-				// Same-origin: the web server proxies to the WS proxy's /slist.
-				// Clients that can only reach :9080 (tunnels) cannot fetch the
-				// proxy's :8081 directly.
-				serverBrowserStatus.textContent = 'Querying master servers...';
-				serverListBody.innerHTML = '';
+		var slistRetryTimer = null;
+		var slistAttempt = 0;
+		function refreshServerList() {
+			// Same-origin: the web server proxies to the WS proxy's /slist.
+			// Clients that can only reach :9080 (tunnels) cannot fetch the
+			// proxy's :8081 directly. A stalled fetch (tunnel under load)
+			// must not hang the browser forever: abort after 25s and retry
+			// while the overlay is open and nothing has arrived.
+			if (slistRetryTimer) { clearTimeout(slistRetryTimer); slistRetryTimer = null; }
+			slistAttempt = 0;
+			serverListBody.innerHTML = '';
+			serverBrowser.classList.add('empty');
 
-				fetch('/slist')
+			function attemptFetch() {
+				serverBrowserStatus.textContent = 'Querying master servers' +
+					(slistAttempt ? ' (retry ' + slistAttempt + ')' : '') + '...';
+				var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+				var killTimer = ctrl ? setTimeout(function() { ctrl.abort(); }, 25000) : null;
+				fetch('/slist', ctrl ? { signal: ctrl.signal } : {})
 					.then(function(r) { return r.json(); })
 					.then(function(data) {
+						if (killTimer) clearTimeout(killTimer);
 						if (data.error) {
 							serverBrowserStatus.textContent = 'Error: ' + data.error;
 							return;
@@ -1241,15 +1287,25 @@
 						allServers = data.servers || [];
 						lastServersJson = JSON.stringify(allServers);
 						renderServerList();
-
-						if (allServers.length === 0) {
-							serverBrowserStatus.textContent = 'No servers found. Make sure the WS proxy is running.';
+						if (allServers.length === 0 && slistAttempt < 2 && serverBrowser.classList.contains('show')) {
+							slistAttempt++;
+							serverBrowserStatus.textContent = 'Master query came back empty, retrying...';
+							slistRetryTimer = setTimeout(attemptFetch, 3000);
 						}
 					})
 					.catch(function(err) {
+						if (killTimer) clearTimeout(killTimer);
+						if (slistAttempt < 2 && serverBrowser.classList.contains('show')) {
+							slistAttempt++;
+							serverBrowserStatus.textContent = 'Server list request stalled, retrying...';
+							slistRetryTimer = setTimeout(attemptFetch, 3000);
+							return;
+						}
 						serverBrowserStatus.textContent = 'Failed to fetch server list: ' + err.message;
 					});
 			}
+			attemptFetch();
+		}
 
 			function renderServerList() {
 				serverListBody.innerHTML = '';
