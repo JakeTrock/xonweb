@@ -35,6 +35,7 @@ echo "== syncing assets/game/"
 rsync assets/game/ "$DEST/assets/game/"
 
 echo "== syncing deploy/k8s/"
+ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/deploy/k8s'
 rsync deploy/k8s/ "$DEST/deploy/k8s/"
 
 # Copy the error sink into the pod path even though the checkout is mounted
