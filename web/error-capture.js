@@ -114,11 +114,35 @@
 	window.XonErrorCapture = {
 		// Called by index.html for every engine console line (print/printErr).
 		engineLine: function (text) {
-			ring.push(String(text).slice(0, 300));
+			text = String(text).slice(0, 300);
+			ring.push(text);
 			if (ring.length > RING_MAX) ring.splice(0, ring.length - RING_MAX);
+			maybeReportLoadFailure(text);
 		},
 		manual: function (message, detail) {
 			enqueue({ event: 'browser_error', message: String(message).slice(0, 2000), detail: detail });
 		},
 	};
+
+	// Asset-load failures print via the engine's stdout (console.log), which
+	// nothing else captures — without this a missing precache model is
+	// invisible in the sink (only its later 'null model' VM warning shows).
+	// Throttled + deduped: map loads can spam dozens of these.
+	var LOADFAIL_RE = /(not found|couldn't load|failed to load|is of unknown|unsupported type)/i;
+	var LOADFAIL_IGNORE_RE = /(gfx\/|menudot|qplaque|ttl_main|mainmenu|\.glsl|shader )/i;
+	var loadfailSeen = {};
+	var loadfailCount = 0;
+	function maybeReportLoadFailure(line) {
+		if (loadfailCount >= 10) return;
+		if (!LOADFAIL_RE.test(line) || LOADFAIL_IGNORE_RE.test(line)) return;
+		var key = line.slice(0, 160);
+		if (loadfailSeen[key]) return;
+		loadfailSeen[key] = 1;
+		loadfailCount++;
+		enqueue({
+			event: 'asset_load_failure',
+			message: key,
+			detail: 'engine console',
+		});
+	}
 })();
