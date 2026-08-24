@@ -1,0 +1,193 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: xonweb
+---
+# Xonotic WASM (https://github.com/JakeTrock/xonweb). The compiled engine
+# (web/darkplaces-wasm.js) is gitignored, so we serve a hostPath checkout of
+# web/ + assets/ + ws-proxy/ from NVMe at /var/lib/k3s-data/xonweb.
+#
+# Three containers, one NodePort:
+#   - web: static/asset server (9080) with COOP/COEP for SharedArrayBuffer
+#   - proxy: WebSocket-to-UDP bridge + /slist master-server API (8081)
+#   - nginx: same-origin front on 8080 so the browser can use
+#     wss://xonweb.geocrypt.me for both HTTP and the WS proxy (the stock
+#     frontend defaults to ws://host:8081, which cannot work through the
+#     Cloudflare tunnel)
+#
+# Images pinned by @sha256 digest (CLAUDE.md convention).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xonweb-nginx
+  namespace: xonweb
+data:
+  nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+    events { worker_connections 1024; }
+    http {
+      access_log /dev/stdout;
+      sendfile on;
+      client_max_body_size 2g;
+      client_body_temp_path /tmp/client_body;
+      proxy_temp_path /tmp/proxy_temp;
+      fastcgi_temp_path /tmp/fastcgi_temp;
+      uwsgi_temp_path /tmp/uwsgi_temp;
+      scgi_temp_path /tmp/scgi_temp;
+
+      map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+      }
+      map $http_upgrade $backend {
+        default http://127.0.0.1:9080;
+        websocket http://127.0.0.1:8081;
+      }
+
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      types {
+        application/wasm wasm;
+      }
+
+      server {
+        listen 8080;
+        server_name _;
+
+        location = /slist {
+          proxy_pass http://127.0.0.1:8081;
+          proxy_set_header Host $host;
+        }
+        location = /resolve {
+          proxy_pass http://127.0.0.1:8081;
+          proxy_set_header Host $host;
+        }
+
+        # Unlisted ROM reversing ports (no index, no links from /).
+        location = /rom_reversing { return 404; }
+        location = /rom_reversing/ { return 404; }
+        location ^~ /rom_reversing/ {
+          alias /xonweb/rom/;
+          autoindex off;
+          index index.html;
+          add_header Cross-Origin-Opener-Policy same-origin always;
+          add_header Cross-Origin-Embedder-Policy require-corp always;
+        }
+
+        location / {
+          proxy_pass $backend;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          proxy_read_timeout 3600s;
+          proxy_send_timeout 3600s;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xonweb
+  namespace: xonweb
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: xonweb } }
+  template:
+    metadata: { labels: { app: xonweb } }
+    spec:
+      # The web server does not read env config, but disable service-link
+      # injection defensively (same class of bug as Bindery — CLAUDE.md).
+      enableServiceLinks: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: docker.io/library/node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
+          workingDir: /xonweb
+          command: ["node", "/xonweb/web/server.js"]
+          env:
+            # Production: harness live-view pages off; error capture on.
+            - { name: XONWEB_VIEWS, value: "0" }
+            - { name: XONWEB_ERRORS, value: "1" }
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 100
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          ports: [{ containerPort: 9080 }]
+          volumeMounts:
+            - { name: data, mountPath: /xonweb, readOnly: true }
+            # Error telemetry sink (lib/errorlog.js) needs a writable spot;
+            # the checkout itself stays read-only.
+            - { name: errlog, mountPath: /xonweb/data }
+          readinessProbe:
+            tcpSocket: { port: 9080 }
+            periodSeconds: 5
+        - name: proxy
+          image: docker.io/library/node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
+          workingDir: /xonweb/ws-proxy
+          command: ["node", "/xonweb/ws-proxy/server.js"]
+          env:
+            - { name: XONWEB_ERRORS, value: "1" }
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 100
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          ports: [{ containerPort: 8081 }]
+          volumeMounts:
+            - { name: data, mountPath: /xonweb, readOnly: true }
+            - { name: errlog, mountPath: /xonweb/data }
+          readinessProbe:
+            tcpSocket: { port: 8081 }
+            periodSeconds: 5
+        - name: nginx
+          image: docker.io/library/nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          ports: [{ containerPort: 8080 }]
+          volumeMounts:
+            - { name: nginx-conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true }
+            - { name: data, mountPath: /xonweb, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            periodSeconds: 5
+          startupProbe:
+            tcpSocket: { port: 8080 }
+            periodSeconds: 5
+            failureThreshold: 30
+      volumes:
+        - name: data
+          hostPath: { path: /var/lib/k3s-data/xonweb, type: Directory }
+        # Writable JSONL error sink shared by web + proxy (emptyDir: lost on
+        # pod restart, which is fine — these are diagnostics, not records).
+        - name: errlog
+          emptyDir: {}
+        - name: nginx-conf
+          configMap: { name: xonweb-nginx }
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xonweb
+  namespace: xonweb
+spec:
+  type: NodePort
+  selector: { app: xonweb }
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30092

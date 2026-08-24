@@ -445,6 +445,7 @@
 		}
 		.xon-color-btn.selected { border-color: #fff; }
 	</style>
+	<script src="error-capture.js"></script>
 </head>
 <body>
 	<div id="container">
@@ -787,6 +788,7 @@
 			print: function(text) {
 				origLog.call(console, text);
 				addConsoleLine(text, false);
+				if (window.XonErrorCapture) window.XonErrorCapture.engineLine(text);
 				if (!engineStarted && typeof text === 'string' && (text.indexOf('menu: program loaded') !== -1 || text.indexOf('menu: program is not loaded') !== -1)) {
 					showClickToPlay();
 				}
@@ -804,6 +806,7 @@
 			printErr: function(text) {
 				origErr.call(console, text);
 				addConsoleLine(text, true);
+				if (window.XonErrorCapture) window.XonErrorCapture.engineLine('[err] ' + text);
 				if (!engineStarted && typeof text === 'string' && (text.indexOf('menu: program loaded') !== -1 || text.indexOf('menu: program is not loaded') !== -1)) {
 					showClickToPlay();
 				}

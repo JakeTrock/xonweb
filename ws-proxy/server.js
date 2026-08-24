@@ -24,7 +24,13 @@ const net = require('net');
 const http = require('http');
 const dns = require('dns');
 const url = require('url');
+const path = require('path');
 const WebSocket = require('ws');
+
+// JSONL error sink (lib/errorlog.js). XONWEB_ERRORS=0 disables capture.
+if (process.env.XONWEB_ERRORS !== '0') {
+	require('../lib/errorlog').create(path.join(__dirname, '..')).attachProcess('ws-proxy');
+}
 
 // --- Xonotic master server list (from xonotic-common.cfg) ---
 const MASTER_SERVERS = [

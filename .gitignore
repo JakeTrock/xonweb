@@ -46,3 +46,4 @@ ws-proxy/udp2raw/*.tar.gz.part
 __pycache__/
 *.pyc
 .cache/
+/data/

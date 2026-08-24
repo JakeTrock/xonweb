@@ -11,7 +11,17 @@ const { URL } = require('url');
 const assetCacheMod = require('./asset-cache');
 
 const PORT = 9080;
+// JSONL error sink: browser reports land via POST /errors, our own
+// uncaught/rejection/console.error via attachProcess. XONWEB_ERRORS=0
+// disables capture entirely. XONWEB_VIEWS=0 hides the harness /view pages
+// (production).
+const VIEWS_ENABLED = process.env.XONWEB_VIEWS !== '0';
+const ERRORS_ENABLED = process.env.XONWEB_ERRORS !== '0';
 const REPO_ROOT = path.join(__dirname, '..');
+const errorlog = require('../lib/errorlog').create(REPO_ROOT);
+if (ERRORS_ENABLED) {
+	errorlog.attachProcess('web');
+}
 const WEB_DIR = path.join(REPO_ROOT, 'web');
 const ASSETS_DIR = path.join(REPO_ROOT, 'assets');
 const ASSETS_GAME = path.join(ASSETS_DIR, 'game');
@@ -586,7 +596,8 @@ const server = http.createServer((req, res) => {
 
 	if (urlPath === '/hello') {
 		res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-		res.end('xonweb ok\nyour ip: ' + remote + '\nhost: 10.103.0.115:9080\nviews: /view/a/  /view/b/\n');
+		res.end('xonweb ok\nyour ip: ' + remote + '\nhost: 10.103.0.115:9080\n'
+			+ (VIEWS_ENABLED ? 'views: /view/a/  /view/b/\n' : 'views: disabled\n'));
 		return;
 	}
 
@@ -603,6 +614,37 @@ const server = http.createServer((req, res) => {
 				fs.mkdirSync(dir, { recursive: true });
 				fs.appendFileSync(path.join(dir, 'englog-' + id + '.txt'), body + '\n');
 			} catch (err) { /* best effort */ }
+			res.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
+			res.end();
+		});
+		return;
+	}
+
+	// Error telemetry sink (see lib/errorlog.js). Browser pages batch
+	// window.onerror / unhandledrejection + engine console tail here.
+	if (req.method === 'POST' && urlPath === '/errors') {
+		if (!ERRORS_ENABLED) {
+			res.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
+			res.end();
+			return;
+		}
+		let body = '';
+		req.on('data', (c) => {
+			body += c;
+			if (body.length > 65536) req.destroy();
+		});
+		req.on('end', () => {
+			try {
+				const parsed = JSON.parse(body);
+				const events = Array.isArray(parsed) ? parsed : [parsed];
+				for (const ev of events.slice(0, 20)) {
+					if (ev && typeof ev === 'object') {
+						const rec = Object.assign({}, ev);
+						rec.event = rec.event || 'browser_error';
+						errorlog.log(rec);
+					}
+				}
+			} catch (e) { /* malformed body: drop */ }
 			res.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
 			res.end();
 		});
@@ -649,6 +691,11 @@ const server = http.createServer((req, res) => {
 
 
 	const plainHtml = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' };
+	if (!VIEWS_ENABLED && (urlPath === '/view' || urlPath === '/view/' || /^\/view\/[ab]/.test(urlPath))) {
+		res.writeHead(404, plainHtml);
+		res.end('views disabled');
+		return;
+	}
 	if (urlPath === '/view' || urlPath === '/view/') {
 		res.writeHead(200, plainHtml);
 		res.end('<!DOCTYPE html><meta charset="utf-8"><title>xonweb views</title><body style="background:#111;color:#ddd;font-family:sans-serif;padding:24px"><h1>You reached 10.103.0.115:9080</h1><p><a href="/view/a/" style="color:#ff9900">PlayerA</a> · <a href="/view/b/" style="color:#ff9900">PlayerB</a></p></body>');

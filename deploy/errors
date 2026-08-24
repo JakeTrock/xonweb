@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// Reader for data/errors.jsonl (written by lib/errorlog.js + web /errors).
+//
+// Usage:
+//   node deploy/errors tail [--since 30m|2h|1d] [-f file]
+//   node deploy/errors summary [--since 30m|2h|1d] [-f file]
+//
+// No deps. Reads both the live file and the .jsonl.1 rotation generation.
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+function parseArgs(argv) {
+	const opts = { cmd: 'summary', since: 0, file: null };
+	for (let i = 0; i < argv.length; i++) {
+		const a = argv[i];
+		if (a === 'tail') opts.cmd = 'tail';
+		else if (a === 'summary') opts.cmd = 'summary';
+		else if (a === '--since') {
+			const m = String(argv[++i] || '').match(/^(\d+)([smhd])$/);
+			if (!m) { console.error('bad --since (use 30m / 2h / 1d)'); process.exit(2); }
+			const mult = { s: 1e3, m: 6e4, h: 36e5, d: 864e5 }[m[2]];
+			opts.since = Date.now() - Number(m[1]) * mult;
+		} else if (a === '-f' || a === '--file') {
+			opts.file = argv[++i];
+		}
+	}
+	return opts;
+}
+
+function repoRoot() {
+	return path.join(__dirname, '..');
+}
+
+function readEvents(opts) {
+	const base = opts.file || path.join(repoRoot(), 'data', 'errors.jsonl');
+	const files = [base + '.1', base].filter(f => { try { return fs.statSync(f).isFile(); } catch (e) { return false; } });
+	const events = [];
+	for (const f of files) {
+		const lines = fs.readFileSync(f, 'utf8').split('\n');
+		for (const line of lines) {
+			if (!line.trim()) continue;
+			try {
+				const ev = JSON.parse(line);
+				const ts = ev.ts ? Date.parse(ev.ts) : 0;
+				if (opts.since && ts && ts < opts.since) continue;
+				events.push(ev);
+			} catch (e) { /* skip torn line */ }
+		}
+	}
+	events.sort((a, b) => Date.parse(a.ts || 0) - Date.parse(b.ts || 0));
+	return events;
+}
+
+function fmtEvent(ev) {
+	const t = ev.ts || '?';
+	const src = ev.source ? '[' + ev.source + '] ' : '';
+	let out = t + ' ' + src + (ev.message || '(no message)');
+	if (ev.detail) out += ' (' + ev.detail + ')';
+	if (ev.url) out += '\n    url: ' + ev.url;
+	if (ev.stack) out += '\n    ' + ev.stack.split('\n').slice(0, 4).join('\n    ');
+	if (ev.engine_tail) {
+		const tailLines = ev.engine_tail.split('\n').slice(-3);
+		out += '\n    engine tail:\n      ' + tailLines.join('\n      ');
+	}
+	return out;
+}
+
+function main() {
+	const opts = parseArgs(process.argv.slice(2));
+	const events = readEvents(opts);
+	if (!events.length) {
+		console.log('no events' + (opts.since ? ' since ' + new Date(opts.since).toISOString() : ''));
+		return;
+	}
+	if (opts.cmd === 'tail') {
+		for (const ev of events.slice(-50)) console.log(fmtEvent(ev) + '\n');
+		return;
+	}
+	// summary
+	const byKey = new Map();
+	for (const ev of events) {
+		const key = (ev.event || '?') + ' | ' + (ev.message || '').slice(0, 120);
+		const cur = byKey.get(key) || { count: 0, last: null, sources: new Set() };
+		cur.count++;
+		cur.last = ev.ts;
+		if (ev.source) cur.sources.add(ev.source);
+		byKey.set(key, cur);
+	}
+	console.log(events.length + ' event(s)' + (opts.since ? ' since ' + new Date(opts.since).toISOString() : '') + ', ' + byKey.size + ' distinct:\n');
+	const rows = [...byKey.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 25);
+	for (const [key, agg] of rows) {
+		console.log(agg.count + 'x  ' + key + (agg.sources.size ? '  [' + [...agg.sources].join(',') + ']' : '') + '  last: ' + (agg.last || '?'));
+	}
+}
+
+main();
