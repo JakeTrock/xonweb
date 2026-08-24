@@ -792,10 +792,29 @@
 			var toast = document.createElement('div');
 			toast.id = 'disconnectToast';
 			toast.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#1a1a2e;border:2px solid #ff6600;border-radius:8px;padding:12px 20px;z-index:500;max-width:80vw;color:#ff9900;font-size:13px;box-shadow:0 4px 20px rgba(0,0,0,0.5);cursor:pointer;text-align:center;';
-			toast.innerHTML = '<b>Disconnected</b>: ' + msg.replace('Disconnect: ', '').substring(0, 150) + '<br><span style="color:#888;font-size:12px;">Click to dismiss</span>';
+			toast.innerHTML = '<b>Disconnected</b>: ' + msg.replace('Disconnect: ', '').substring(0, 150) + '<br><span style="color:#888;font-size:12px;">Returning to menu…</span>';
 			toast.onclick = function() { toast.remove(); };
 			document.body.appendChild(toast);
 			setTimeout(function() { if (toast.parentNode) toast.remove(); }, 10000);
+		}
+
+		// Unexpected disconnect (server dropped/kicked us, timeout): the
+		// engine would sit on a black screen. Show the toast, then quit to
+		// the init menu unless the player already started a new connection.
+		var disconnectQuitTimer = null;
+		function handleUnexpectedDisconnect(text) {
+			if (switchingServer) return;
+			showDisconnectToast(text);
+			if (disconnectQuitTimer) return; // already scheduled
+			var seqAtDisconnect = connectSeq;
+			disconnectQuitTimer = setTimeout(function() {
+				disconnectQuitTimer = null;
+				if (switchingServer || connectSeq !== seqAtDisconnect) return;
+				quitToMenu();
+			}, 2500);
+		}
+		function cancelPendingDisconnectQuit() {
+			if (disconnectQuitTimer) { clearTimeout(disconnectQuitTimer); disconnectQuitTimer = null; }
 		}
 
 		function showClickToPlay() {
@@ -860,8 +879,11 @@
 						maybeRecoverMissingMap(text);
 					if (typeof handleConnectRejection === 'function')
 						handleConnectRejection(text);
-					if (text.indexOf('Disconnect:') !== -1 && !switchingServer)
-						showDisconnectToast(text);
+					// 'Disconnect: <reason>' (server kick/shutdown) or a bare
+					// 'Disconnected' (timeout / server vanished). QC prints like
+					// 'Player disconnected' must not match (anchored regex).
+					if (/^(Disconnect(?::|$)|Disconnected$)/.test(String(text).trim()))
+						handleUnexpectedDisconnect(text);
 				}
 			},
 			printErr: function(text) {
@@ -878,8 +900,11 @@
 						maybeRecoverMissingMap(text);
 					if (typeof handleConnectRejection === 'function')
 						handleConnectRejection(text);
-					if (text.indexOf('Disconnect:') !== -1 && !switchingServer)
-						showDisconnectToast(text);
+					// 'Disconnect: <reason>' (server kick/shutdown) or a bare
+					// 'Disconnected' (timeout / server vanished). QC prints like
+					// 'Player disconnected' must not match (anchored regex).
+					if (/^(Disconnect(?::|$)|Disconnected$)/.test(String(text).trim()))
+						handleUnexpectedDisconnect(text);
 				}
 			},
 
@@ -1075,6 +1100,8 @@
 		// in-engine Close variant.
 		function quitToMenu() {
 			hideGameMenu();
+			cancelPendingDisconnectQuit();
+			hideMapDownloadOverlay();
 			var browserEl = document.getElementById('serverBrowser');
 			if (browserEl) browserEl.classList.remove('show');
 			stopServerListStream();
@@ -1525,6 +1552,7 @@
 			lastConnectAddr = addr;
 			lastProxyUrl = proxyUrl;
 			rejectReasonPending = false;
+			cancelPendingDisconnectQuit();
 			mapDlOverlay.style.display = 'none';
 			syncMouseCapture();
 			try {
