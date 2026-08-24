@@ -88,6 +88,29 @@ function expired(meta, now) {
 function create(repoRoot) {
 	const root = cacheRoot(repoRoot);
 	const inflight = new Map();
+	// Tri-state: null = untested, true/false = probed. A read-only checkout
+	// (k8s hostPath) must degrade to pass-through proxying, never crash the
+	// download (the ENOENT-in-createWriter uncaughtException class).
+	let writable = null;
+
+	function ensureWritable() {
+		if (writable !== null) return writable;
+		try {
+			fs.mkdirSync(root, { recursive: true });
+			fs.accessSync(root, fs.constants.W_OK);
+			fs.writeFileSync(path.join(root, '.probe'), 'ok');
+			fs.unlinkSync(path.join(root, '.probe'));
+			writable = true;
+		} catch (e) {
+			writable = false;
+			console.error('[asset-cache] disabled (read-only?): ' + e.message);
+		}
+		return writable;
+	}
+
+	function writableNow() {
+		return ensureWritable();
+	}
 
 	function lookup(url) {
 		const key = keyFor(repoRoot, url);
@@ -139,6 +162,17 @@ function create(repoRoot) {
 	}
 
 	function createWriter(url) {
+		if (!ensureWritable()) {
+			// No-op writer: teeUpstreamToCacheAndRes keeps streaming to the
+			// client, nothing is persisted, commit reports clean success.
+			return {
+				key: keyFor(repoRoot, url),
+				write: function () { return true; },
+				once: function () {},
+				abort: function () {},
+				commit: function (extra, cb) { if (cb) cb(null, null); },
+			};
+		}
 		const key = keyFor(repoRoot, url);
 		fs.mkdirSync(key.dir, { recursive: true });
 		const tmp = key.bin + '.tmp-' + process.pid + '-' + Date.now();
@@ -319,6 +353,7 @@ function create(repoRoot) {
 	return {
 		root: root,
 		ttlMs: CACHE_TTL_MS,
+		writable: writableNow,
 		lookup: lookup,
 		touch: touch,
 		createWriter: createWriter,

@@ -34,6 +34,12 @@ rsync lib/ "$DEST/lib/"
 echo "== syncing assets/game/"
 rsync assets/game/ "$DEST/assets/game/"
 
+# Official map packs for /mapfind (server.js falls back to xonotic/data/).
+# Outside assets/ on purpose: /filelist (first-run cache) must not include them.
+echo "== syncing xonotic/data map packs"
+ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/xonotic/data'
+rsync xonotic/data/*.pk3 "$DEST/xonotic/data/"
+
 echo "== syncing deploy/k8s/"
 ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/deploy/k8s'
 rsync deploy/k8s/ "$DEST/deploy/k8s/"

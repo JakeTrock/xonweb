@@ -127,6 +127,9 @@ spec:
             # Error telemetry sink (lib/errorlog.js) needs a writable spot;
             # the checkout itself stays read-only.
             - { name: errlog, mountPath: /xonweb/data }
+            # Proxied download cache (asset-cache.js). Without this every
+            # /mapdl //curlproxy write threw ENOENT on the read-only mount.
+            - { name: assetcache, mountPath: /xonweb/.cache }
           readinessProbe:
             tcpSocket: { port: 9080 }
             periodSeconds: 5
@@ -174,6 +177,10 @@ spec:
         # pod restart, which is fine — these are diagnostics, not records).
         - name: errlog
           emptyDir: {}
+        # Proxied download cache (3-day TTL, swept hourly).
+        - name: assetcache
+          emptyDir:
+            sizeLimit: 4Gi
         - name: nginx-conf
           configMap: { name: xonweb-nginx }
         - name: tmp

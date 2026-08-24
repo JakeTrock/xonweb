@@ -384,7 +384,10 @@ function proxyRemoteUrl(targetUrl, req, res, hops, cacheOpts) {
 	cacheOpts = cacheOpts || {};
 	if (!cacheOpts.cacheUrl) cacheOpts.cacheUrl = targetUrl;
 	const cacheUrl = cacheOpts.cacheUrl;
-	const canCache = !!(cacheOpts.enabled && req.method !== 'POST');
+	// Skip the cache tee entirely when the store is unwritable (read-only
+	// checkout): the no-op writer would stream fine, but concurrent callers
+	// would wait on a lookup that can never hit.
+	const canCache = !!(cacheOpts.enabled && req.method !== 'POST' && assetCache.writable());
 
 	if (hops === 0 && canCache) {
 		const hit = assetCache.lookup(cacheUrl);
