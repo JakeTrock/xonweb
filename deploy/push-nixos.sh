@@ -43,26 +43,23 @@ ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/data && chmod 777 
 
 MANIFEST_SHA_BEFORE=$(ssh -o BatchMode=yes nixos 'sha256sum /var/lib/k3s-data/xonweb/deploy/k8s/xonweb.yaml 2>/dev/null | cut -d" " -f1' || true)
 
-apply_and_restart() {
-	ssh -o BatchMode=yes nixos '
-		set -e
-		if command -v k3s >/dev/null 2>&1; then K=k3s
-		else K="sudo -n k3s"; fi
-		$K kubectl apply -f /var/lib/k3s-data/xonweb/deploy/k8s/xonweb.yaml
-		if [ "${1:-}" = "--restart" ]; then
-			$K kubectl rollout restart deployment/xonweb -n xonweb
-			$K kubectl rollout status  deployment/xonweb -n xonweb --timeout=120s
-		fi
-	' "$1"
-}
-
-echo "== applying manifests"
-apply_and_restart
+ssh -o BatchMode=yes nixos '
+	set -e
+	if command -v k3s >/dev/null 2>&1; then K=k3s
+	else K="sudo -n k3s"; fi
+	$K kubectl apply -f /var/lib/k3s-data/xonweb/deploy/k8s/xonweb.yaml
+'
 
 MANIFEST_SHA_AFTER=$(ssh -o BatchMode=yes nixos 'sha256sum /var/lib/k3s-data/xonweb/deploy/k8s/xonweb.yaml | cut -d" " -f1')
 if [ "$RESTART" = 1 ] || [ "$MANIFEST_SHA_BEFORE" != "$MANIFEST_SHA_AFTER" ]; then
 	echo "== restarting deployment"
-	apply_and_restart --restart
+	ssh -o BatchMode=yes nixos '
+		set -e
+		if command -v k3s >/dev/null 2>&1; then K=k3s
+		else K="sudo -n k3s"; fi
+		$K kubectl rollout restart deployment/xonweb -n xonweb
+		$K kubectl rollout status  deployment/xonweb -n xonweb --timeout=120s
+	'
 else
 	echo "== manifest unchanged; no restart needed"
 fi
