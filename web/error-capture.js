@@ -90,6 +90,27 @@
 		});
 	});
 
+	// Swallowed failures are logged via console.error, not thrown — capture
+	// those too or they never reach the sink.
+	try {
+		var origError = console.error.bind(console);
+		console.error = function () {
+			try {
+				var first = arguments[0];
+				var msg = first instanceof Error ? (first.message || String(first)) : String(first);
+				if (msg) {
+					enqueue({
+						event: 'browser_error',
+						message: msg.slice(0, 2000),
+						stack: first instanceof Error && first.stack ? String(first.stack).split('\n').slice(0, 25).join('\n') : undefined,
+						detail: 'console.error',
+					});
+				}
+			} catch (e) { /* never break logging */ }
+			origError.apply(null, arguments);
+		};
+	} catch (e) { /* very old engines */ }
+
 	window.XonErrorCapture = {
 		// Called by index.html for every engine console line (print/printErr).
 		engineLine: function (text) {

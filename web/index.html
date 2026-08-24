@@ -627,6 +627,7 @@
 
 		<!-- Map Download Overlay -->
 		<div id="mapDownloadOverlay" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:2px solid #ff6600;border-radius:8px;padding:30px 40px;z-index:300;display:none;text-align:center;">
+			<button id="mapDlDismiss" title="Dismiss" style="position:absolute;top:6px;right:8px;background:none;border:none;color:#666;font-size:16px;cursor:pointer;line-height:1;">&#215;</button>
 			<h3 id="mapDlTitle" style="color:#ff6600;margin-bottom:15px;">Downloading Map...</h3>
 			<div id="mapDlStatus" style="color:#aaa;font-size:14px;margin-bottom:10px;">Fetching map package...</div>
 			<div style="width:300px;height:8px;background:#0a0a0a;border-radius:4px;overflow:hidden;">
@@ -1011,7 +1012,12 @@
 				return;
 			}
 			var mapDl = document.getElementById('mapDownloadOverlay');
-			if (mapDl && mapDl.style.display === 'block') return;
+			if (mapDl && mapDl.style.display === 'block') {
+				// The dialog must never be a trap: Esc dismisses it. An
+				// in-flight download/connect keeps running in the background.
+				hideMapDownloadOverlay();
+				return;
+			}
 
 			toggleGameMenu();
 		}
@@ -1284,6 +1290,20 @@
 		var mapRecoverBusy = false;
 		var mapRecoverFailed = {};
 
+		function hideMapDownloadOverlay() {
+			mapDlOverlay.style.display = 'none';
+			syncMouseCapture();
+		}
+
+		function reportMapError(where, err) {
+			console.error(where + ':', err);
+			if (window.XonErrorCapture) {
+				window.XonErrorCapture.manual('Map download failed: ' + (err && err.message ? err.message : err), where);
+			}
+		}
+
+		document.getElementById('mapDlDismiss').addEventListener('click', hideMapDownloadOverlay);
+
 		function rescanFs() {
 			engineExec('fs_rescan');
 			console.log('fs_rescan after map/texture prefetch');
@@ -1377,7 +1397,7 @@
 			mapDlProgress.style.width = '0%';
 			mapDlOverlay.style.display = 'block';
 			return downloadMapPk3(mapName, addr).catch(function(err) {
-				console.error('Map download failed, continuing with texture prefetch:', err);
+				reportMapError('Map download failed, continuing with texture prefetch', err);
 			}).then(function() {
 				if (seq !== undefined && seq !== connectSeq) return;
 				return prefetchThen(mapName);
@@ -1431,9 +1451,10 @@
 				doConnect(addr, proxyUrl, seq);
 			}).catch(function(err) {
 				if (seq !== connectSeq) return;
-				console.error('[map-recover] failed for ' + missing + ':', err);
+				reportMapError('[map-recover] failed for ' + missing, err);
 				mapRecoverFailed[missing] = true;
 				showMapError('Could not download map ' + missing);
+				hideMapDownloadOverlay();
 				switchingServer = false;
 			}).then(function() {
 				mapRecoverBusy = false;
@@ -1590,6 +1611,12 @@
 			return findLocalHashedPack().catch(function(err) {
 				console.log('Local pack miss: ' + err.message);
 				return tryNextCandidate(0);
+			}).catch(function(err) {
+				// Terminal failure: never leave the overlay up. Callers decide
+				// whether to keep going (prepareMapAndConnect) or bail
+				// (maybeRecoverMissingMap), but the dialog itself must clear.
+				hideMapDownloadOverlay();
+				throw err;
 			});
 		}
 
