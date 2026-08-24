@@ -45,8 +45,9 @@ ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/deploy/k8s'
 rsync deploy/k8s/ "$DEST/deploy/k8s/"
 
 # Copy the error sink into the pod path even though the checkout is mounted
-# read-only (the pods get a writable emptyDir at /xonweb/data).
-ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/data && chmod 777 /var/lib/k3s-data/xonweb/data'
+# read-only (the pods get a writable emptyDir at /xonweb/data). Same for the
+# proxied-download cache: the emptyDir mount needs the mountpoint to exist.
+ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/data /var/lib/k3s-data/xonweb/.cache && chmod 777 /var/lib/k3s-data/xonweb/data /var/lib/k3s-data/xonweb/.cache'
 
 MANIFEST_SHA_BEFORE=$(ssh -o BatchMode=yes nixos 'sha256sum /var/lib/k3s-data/xonweb/deploy/k8s/xonweb.yaml 2>/dev/null | cut -d" " -f1' || true)
 
