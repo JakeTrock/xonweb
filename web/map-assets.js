@@ -244,8 +244,31 @@
 		return names;
 	}
 
-	function soundRelCandidates(name) {
-		var p = String(name || '').replace(/^\/+/, '').replace(/\\/g, '/');
+	// Entity-lump model references (target_spawn, turrets, map objects…).
+	// Brush models ("*12") and the BSP itself ("maps/x.bsp") are excluded —
+	// only loose loose-file formats the engine loads from gamedirs.
+	function parseBspModels(bsp) {
+		if (!bsp || bsp.length < 16) return [];
+		var ident = String.fromCharCode(bsp[0], bsp[1], bsp[2], bsp[3]);
+		if (ident !== 'IBSP') return [];
+		var off = u32(bsp, 8);
+		var len = u32(bsp, 8 + 4);
+		if (off + len > bsp.length || len <= 0) return [];
+		var text = new TextDecoder('latin1').decode(bsp.subarray(off, off + len));
+		var names = [];
+		var seen = {};
+		var re = /"model"\s+"([^"]+?\.(?:iqm|md3|dpm|zym|mdl))"/gi;
+		var m;
+		while ((m = re.exec(text))) {
+			var s = m[1].replace(/\\/g, '/').replace(/^\/+/, '');
+			if (!s || seen[s]) continue;
+			seen[s] = 1;
+			names.push(s);
+		}
+		return names;
+	}
+
+	function soundRelCandidates(name) {		var p = String(name || '').replace(/^\/+/, '').replace(/\\/g, '/');
 		var out = [];
 		function add(x) {
 			if (!x || out.indexOf(x) !== -1) return;
@@ -517,7 +540,7 @@
 
 	function prefetch(mapName, onProgress) {
 		var progress = onProgress || function () {};
-		var stats = { shaders: 0, images: 0, sounds: 0, skipped: 0, missing: 0, cached: 0, bsp: null };
+		var stats = { shaders: 0, images: 0, sounds: 0, models: 0, skipped: 0, missing: 0, cached: 0, bsp: null };
 
 		function report(status, percent) {
 			progress({ status: status, percent: percent || 0, stats: stats });
@@ -538,7 +561,8 @@
 			stats.bsp = true;
 			var shaderNames = parseBspTextures(bsp);
 			var soundNames = parseBspSounds(bsp);
-			console.log('[map-assets] ' + mapName + ' references ' + shaderNames.length + ' shaders, ' + soundNames.length + ' sounds');
+			var modelNames = parseBspModels(bsp);
+			console.log('[map-assets] ' + mapName + ' references ' + shaderNames.length + ' shaders, ' + soundNames.length + ' sounds, ' + modelNames.length + ' models');
 			report('Fetching shader scripts…', 8);
 
 			return dirlist('xonotic-maps.pk3dir/scripts').then(function (scriptFiles) {
@@ -721,6 +745,36 @@
 								}
 								return r;
 							});
+						});
+					}).then(function () {
+						if (!modelNames.length) return null;
+						report('Downloading models (0/' + modelNames.length + ')…', 94);
+						var modelDone = 0;
+						return pool(modelNames, CONCURRENCY, function (rel) {
+							return fetchFirstHit(gamedirRels(String(rel).replace(/^\/+/, ''))).then(function (r) {
+								modelDone++;
+								if (!r || r.missing) stats.missing++;
+								else if (r.skipped) stats.skipped++;
+								else stats.models++;
+								if (modelDone === modelNames.length || modelDone % 2 === 0) {
+									report('Downloading models (' + modelDone + '/' + modelNames.length + ')…', 94);
+								}
+								return r;
+							});
+						});
+					}).then(function () {
+						// Levelshot / minimap image: the engine (HUD minimap,
+						// CSQC drawpic) looks for maps/<map>.jpg|.tga|.png in
+						// MEMFS and logs "Couldn't load maps/<map>" when the
+						// loose file is missing. Cheap: one small image.
+						var shotRels = [];
+						var shotExts = ['.jpg', '.tga', '.png'];
+						for (var se = 0; se < shotExts.length; se++) {
+							var sr = gamedirRels('maps/' + mapName + shotExts[se]);
+							for (var sj = 0; sj < sr.length; sj++) shotRels.push(sr[sj]);
+						}
+						return fetchFirstHit(shotRels).then(function (r) {
+							if (r && !r.missing) stats.levelshot = true;
 						});
 					}).then(function () {
 						report('Saving texture cache…', 97);

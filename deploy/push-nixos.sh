@@ -40,6 +40,18 @@ echo "== syncing xonotic/data map packs"
 ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/xonotic/data'
 rsync xonotic/data/*.pk3 "$DEST/xonotic/data/"
 
+# Support trees the /game/ fallback serves to clients: map sounds, entity
+# models, shader scripts, skyboxes, levelshots/mapinfo/waypoints. Without
+# these every ambient sound / CSQC model / minimap 404s in production.
+echo "== syncing xonotic/data support trees"
+for sub in \
+	xonotic-maps.pk3dir/sound xonotic-maps.pk3dir/models xonotic-maps.pk3dir/scripts \
+	xonotic-maps.pk3dir/env xonotic-maps.pk3dir/maps \
+	xonotic-data.pk3dir/sound xonotic-data.pk3dir/models xonotic-data.pk3dir/scripts; do
+	ssh -o BatchMode=yes nixos "mkdir -p /var/lib/k3s-data/xonweb/xonotic/data/$(dirname "$sub")"
+	rsync "xonotic/data/$sub/" "$DEST/xonotic/data/$sub/"
+done
+
 echo "== syncing deploy/k8s/"
 ssh -o BatchMode=yes nixos 'mkdir -p /var/lib/k3s-data/xonweb/deploy/k8s'
 rsync deploy/k8s/ "$DEST/deploy/k8s/"

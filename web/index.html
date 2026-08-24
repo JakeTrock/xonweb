@@ -262,7 +262,9 @@
 			position: absolute;
 			top: 50%; left: 50%;
 			transform: translate(-50%, -50%);
-			background: #1a1a2e;
+			background: rgba(26, 26, 46, 0.86);
+			-webkit-backdrop-filter: blur(5px);
+			backdrop-filter: blur(5px);
 			border: 2px solid #ff6600;
 			border-radius: 8px;
 			padding: 20px;
@@ -303,7 +305,20 @@
 			overflow-y: auto;
 			border: 1px solid #333;
 			border-radius: 4px;
+			position: relative;
 		}
+		/* Faint Horixon watermark shown while the list is empty. */
+		.browser-watermark {
+			display: none;
+			position: absolute;
+			top: 50%; left: 50%;
+			transform: translate(-50%, -50%);
+			width: 68%;
+			max-width: 420px;
+			opacity: 0.12;
+			pointer-events: none;
+		}
+		#serverBrowser.empty .browser-watermark { display: block; }
 		#serverList {
 			width: 100%;
 			border-collapse: collapse;
@@ -639,7 +654,7 @@
 		</div>
 
 		<!-- Server Browser -->
-		<div id="serverBrowser">
+		<div id="serverBrowser" class="empty">
 			<h2>
 				<span>Server Browser</span>
 				<div class="actions">
@@ -652,6 +667,7 @@
 				<input type="text" id="serverSearch" placeholder="Search server name or map..." autocomplete="off" oninput="renderServerList()">
 			</div>
 			<div id="serverListContainer">
+				<svg class="browser-watermark horixon-logo" viewBox="0 0 320 110" aria-hidden="true"><path class="logo-arc" d="M 28 40 Q 160 -12 292 40"/><text class="logo-word" x="160" y="92" text-anchor="middle" font-size="48">HORIXON</text></svg>
 				<table id="serverList">
 					<thead>
 						<tr>
@@ -1265,6 +1281,7 @@
 
 				serverBrowserStatus.textContent = filtered.length + ' servers' +
 					(allServers.length !== filtered.length ? ' (of ' + allServers.length + ')' : '');
+				serverBrowser.classList.toggle('empty', filtered.length === 0);
 
 				filtered.forEach(function(s) {
 					var tr = document.createElement('tr');
