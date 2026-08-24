@@ -230,7 +230,44 @@ function resolveGameFile(relPath) {
 			if (st.isFile()) return c.file;
 		} catch (e) { /* missing */ }
 	}
-	return null;
+	return resolveGameFileCaseInsensitive(candidates);
+}
+
+// Case-insensitive fallback. Upstream data lives in pk3 zips whose lookups
+// are case-insensitive; our loose-file tree is not, so a BSP referencing
+// 'Slime_bubbling.wav' next to a disk file 'Slime_Bubbling.wav' 404s on
+// native-style content. Walks each path segment per root; memoized.
+const ciMemo = new Map();
+const CI_MEMO_MAX = 512;
+function resolveGameFileCaseInsensitive(candidates) {
+	const key = candidates.map(function (c) { return c.root; }).join('|') + ':' + candidates[0].file;
+	const memo = ciMemo.get(key);
+	if (memo !== undefined) return memo;
+	let resolved = null;
+	for (let i = 0; i < candidates.length && !resolved; i++) {
+		const c = candidates[i];
+		if (!isInside(c.file, c.root)) continue;
+		const segs = path.relative(c.root, c.file).split(path.sep);
+		let dir = c.root;
+		let complete = true;
+		for (let s = 0; s < segs.length; s++) {
+			let entries;
+			try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { complete = false; break; }
+			const want = segs[s].toLowerCase();
+			let next = null;
+			for (let e = 0; e < entries.length; e++) {
+				if (entries[e].name.toLowerCase() === want) { next = path.join(dir, entries[e].name); break; }
+			}
+			if (!next) { complete = false; break; }
+			dir = next;
+		}
+		try {
+			if (complete && dir && fs.statSync(dir).isFile()) resolved = dir;
+		} catch (e) { /* not found */ }
+	}
+	if (ciMemo.size > CI_MEMO_MAX) ciMemo.clear();
+	ciMemo.set(key, resolved);
+	return resolved;
 }
 
 function walkFiles(dir, base, out, seen, cap) {
