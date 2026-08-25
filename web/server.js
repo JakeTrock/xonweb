@@ -60,6 +60,7 @@ const MIME_TYPES = {
 	'.lno': 'application/octet-stream',
 	'.pk3dir': 'application/octet-stream',
 	'.shader': 'text/plain',
+	'.svg': 'image/svg+xml',
 };
 
 // Text-ish responses are worth gzipping; the 4 MB engine blob is the big win
